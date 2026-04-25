@@ -28,7 +28,7 @@ if sys.platform == 'win32' and hasattr(os, 'add_dll_directory'):
 INSTALL_DIR = os.path.join(
     os.environ.get('LOCALAPPDATA', os.path.expanduser('~')), 'LightFrame')
 
-APP_VERSION = 'v2026.04.25'
+APP_VERSION = 'v1.1'
 GITHUB_REPO = 'ccSinni/Lightframe'
 APP_EXE_NAME = 'lightframe.exe'
 LEGACY_APP_EXE_NAME = 'LightFrame.exe'
@@ -774,7 +774,7 @@ def ffmpeg_available():
 
 
 def _release_version_tuple(tag):
-    cleaned = (tag or '').strip().lstrip('vV')
+    cleaned = (tag or '').strip().lstrip('vV').lstrip('.')
     if not cleaned:
         return ()
     parts = []
@@ -786,10 +786,20 @@ def _release_version_tuple(tag):
     return tuple(parts)
 
 
+def _is_date_based_version(version_parts):
+    return len(version_parts) >= 3 and version_parts[0] >= 2000
+
+
 def _is_newer_release(latest_tag, current_tag):
     latest_version = _release_version_tuple(latest_tag)
     current_version = _release_version_tuple(current_tag)
     if latest_version and current_version:
+        latest_is_date = _is_date_based_version(latest_version)
+        current_is_date = _is_date_based_version(current_version)
+        if latest_is_date != current_is_date:
+            # Allow a one-time migration from the legacy date-based tag scheme
+            # to semantic versions such as v1.1.
+            return current_is_date and not latest_is_date
         return latest_version > current_version
     return bool(latest_tag) and latest_tag != current_tag
 
