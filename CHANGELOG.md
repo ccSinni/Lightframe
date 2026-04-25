@@ -2,6 +2,11 @@
 
 All notable changes to LightFrame are documented here.
 
+## v.1.03 - 2026-04-25
+
+- published a fresh release tag so packaged update checks no longer depend on a replaced `v.1.02` asset
+- rebuilt `lightframe.exe` with the current self-update logic and re-published it as `v.1.03`
+
 ## v.1.02 - 2026-04-25
 
 - changed update detection to follow GitHub's latest published release tag directly

@@ -28,7 +28,7 @@ if sys.platform == 'win32' and hasattr(os, 'add_dll_directory'):
 INSTALL_DIR = os.path.join(
     os.environ.get('LOCALAPPDATA', os.path.expanduser('~')), 'LightFrame')
 
-APP_VERSION = 'v.1.02'
+APP_VERSION = 'v.1.03'
 GITHUB_REPO = 'ccSinni/Lightframe'
 APP_EXE_NAME = 'lightframe.exe'
 LEGACY_APP_EXE_NAME = 'LightFrame.exe'
