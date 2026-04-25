@@ -818,6 +818,25 @@ def runtime_executable_path():
     return os.path.abspath(__file__)
 
 
+def update_target_executables():
+    targets = [
+        os.path.abspath(os.path.join(INSTALL_DIR, APP_EXE_NAME)),
+        os.path.abspath(os.path.join(INSTALL_DIR, LEGACY_APP_EXE_NAME)),
+    ]
+    if getattr(sys, 'frozen', False):
+        targets.append(runtime_executable_path())
+
+    unique_targets = []
+    seen = set()
+    for target in targets:
+        norm = os.path.normcase(os.path.abspath(target))
+        if norm in seen:
+            continue
+        seen.add(norm)
+        unique_targets.append(os.path.abspath(target))
+    return unique_targets
+
+
 class UpdateCheckWorker(QThread):
     done = pyqtSignal(object)
     error = pyqtSignal(str)
@@ -1194,27 +1213,36 @@ class MainWindow(QMainWindow):
         if not os.path.isfile(downloaded_exe):
             raise RuntimeError('Downloaded update file was not found.')
 
-        target_exe = os.path.abspath(os.path.join(INSTALL_DIR, UPDATE_ASSET_NAME))
         os.makedirs(INSTALL_DIR, exist_ok=True)
+        target_exes = update_target_executables()
+        launch_exe = runtime_executable_path() if getattr(sys, 'frozen', False) else target_exes[0]
 
         fd, tmp_bat = tempfile.mkstemp(prefix='lightframe_update_', suffix='.bat')
         os.close(fd)
 
         temp_esc = downloaded_exe.replace('"', '')
-        target_esc = target_exe.replace('"', '')
         bat_lines = [
             '@echo off',
             'ping 127.0.0.1 -n 4 >nul',
-            ':retry_copy',
-            f'copy /y "{temp_esc}" "{target_esc}" >nul',
-            'if errorlevel 1 (',
-            '  ping 127.0.0.1 -n 2 >nul',
-            '  goto retry_copy',
-            ')',
-            f'del /f /q "{temp_esc}" >nul 2>&1',
-            f'start "" "{target_esc}"',
-            'del /f /q "%~f0" >nul 2>&1',
         ]
+
+        for index, target_exe in enumerate(target_exes, start=1):
+            target_esc = target_exe.replace('"', '')
+            bat_lines.extend([
+                f':retry_copy_{index}',
+                f'copy /y "{temp_esc}" "{target_esc}" >nul',
+                'if errorlevel 1 (',
+                '  ping 127.0.0.1 -n 2 >nul',
+                f'  goto retry_copy_{index}',
+                ')',
+            ])
+
+        launch_esc = launch_exe.replace('"', '')
+        bat_lines.extend([
+            f'del /f /q "{temp_esc}" >nul 2>&1',
+            f'start "" "{launch_esc}"',
+            'del /f /q "%~f0" >nul 2>&1',
+        ])
 
         with open(tmp_bat, 'w', encoding='utf-8', newline='\r\n') as handle:
             handle.write('\r\n'.join(bat_lines))
