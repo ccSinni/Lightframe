@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.pyc
+
+build/
+dist/
+release/
+
+build_log*.txt
+
+lightframe-thumbs-*/
+*.tmp
+
+Thumbs.db
+Desktop.ini
+*.lnk
+mpv-2.dll
