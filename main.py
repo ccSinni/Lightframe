@@ -10,9 +10,12 @@ LightFrame — Lightweight Video Player for Windows
 import sys
 import os
 import base64
+import json
 import shutil
 import subprocess
 import tempfile
+import urllib.error
+import urllib.request
 
 # python-mpv searches %PATH% for the DLL. Prepend the project folder so
 # that mpv-2.dll placed next to main.py is found without PATH changes.
@@ -24,6 +27,17 @@ if sys.platform == 'win32' and hasattr(os, 'add_dll_directory'):
 # Dedicated install folder — all user-facing files live here
 INSTALL_DIR = os.path.join(
     os.environ.get('LOCALAPPDATA', os.path.expanduser('~')), 'LightFrame')
+
+APP_VERSION = 'v2026.04.25'
+GITHUB_REPO = 'ccSinni/Lightframe'
+APP_EXE_NAME = 'lightframe.exe'
+LEGACY_APP_EXE_NAME = 'LightFrame.exe'
+UPDATE_ASSET_NAME = APP_EXE_NAME
+LATEST_RELEASE_API = f'https://api.github.com/repos/{GITHUB_REPO}/releases/latest'
+HTTP_HEADERS = {
+    'Accept': 'application/vnd.github+json',
+    'User-Agent': f'LightFrame/{APP_VERSION}',
+}
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -712,7 +726,7 @@ def ffmpeg_exe():
     Return the path to ffmpeg to use.
     Priority:
       1. INSTALL_DIR\ffmpeg.exe  (normal installed location)
-      2. next to LightFrame.exe   (portable / dev)
+            2. next to the packaged app executable (portable / dev)
       3. resolved absolute ffmpeg.exe from PATH, excluding cwd and temp dirs
     """
     exe_dir = os.path.dirname(sys.executable if getattr(sys, 'frozen', False)
@@ -759,6 +773,127 @@ def ffmpeg_available():
         return False
 
 
+def _release_version_tuple(tag):
+    cleaned = (tag or '').strip().lstrip('vV')
+    if not cleaned:
+        return ()
+    parts = []
+    for chunk in cleaned.replace('-', '.').split('.'):
+        digits = ''.join(ch for ch in chunk if ch.isdigit())
+        if not digits:
+            break
+        parts.append(int(digits))
+    return tuple(parts)
+
+
+def _is_newer_release(latest_tag, current_tag):
+    latest_version = _release_version_tuple(latest_tag)
+    current_version = _release_version_tuple(current_tag)
+    if latest_version and current_version:
+        return latest_version > current_version
+    return bool(latest_tag) and latest_tag != current_tag
+
+
+def _fetch_json(url):
+    request = urllib.request.Request(url, headers=HTTP_HEADERS)
+    with urllib.request.urlopen(request, timeout=20) as response:
+        return json.load(response)
+
+
+def latest_release_info():
+    data = _fetch_json(LATEST_RELEASE_API)
+    asset = None
+    for item in data.get('assets', []):
+        if item.get('name') == UPDATE_ASSET_NAME:
+            asset = item
+            break
+    return {
+        'tag_name': data.get('tag_name') or '',
+        'name': data.get('name') or data.get('tag_name') or 'Latest Release',
+        'body': data.get('body') or '',
+        'html_url': data.get('html_url') or '',
+        'published_at': data.get('published_at') or '',
+        'asset_url': asset.get('browser_download_url') if asset else '',
+    }
+
+
+def runtime_executable_path():
+    if getattr(sys, 'frozen', False):
+        return os.path.abspath(sys.executable)
+    return os.path.abspath(__file__)
+
+
+class UpdateCheckWorker(QThread):
+    done = pyqtSignal(object)
+    error = pyqtSignal(str)
+
+    def run(self):
+        try:
+            self.done.emit(latest_release_info())
+        except urllib.error.HTTPError as exc:
+            self.error.emit(f'GitHub update check failed: HTTP {exc.code}')
+        except urllib.error.URLError as exc:
+            self.error.emit(f'GitHub update check failed: {exc.reason}')
+        except Exception as exc:
+            self.error.emit(f'GitHub update check failed: {exc}')
+
+
+class UpdateDownloadWorker(QThread):
+    progress = pyqtSignal(int, str)
+    done = pyqtSignal(str)
+    error = pyqtSignal(str)
+
+    def __init__(self, release_info):
+        super().__init__()
+        self.release_info = dict(release_info)
+
+    def run(self):
+        asset_url = self.release_info.get('asset_url')
+        if not asset_url:
+            self.error.emit(f'The latest release does not include a {UPDATE_ASSET_NAME} asset.')
+            return
+
+        temp_path = None
+        try:
+            fd, temp_path = tempfile.mkstemp(prefix='lightframe_update_', suffix='.exe')
+            os.close(fd)
+
+            request = urllib.request.Request(asset_url, headers=HTTP_HEADERS)
+            with urllib.request.urlopen(request, timeout=60) as response, \
+                    open(temp_path, 'wb') as target:
+                total_size = int(response.headers.get('Content-Length') or 0)
+                downloaded = 0
+                while True:
+                    chunk = response.read(1024 * 256)
+                    if not chunk:
+                        break
+                    target.write(chunk)
+                    downloaded += len(chunk)
+                    if total_size > 0:
+                        percent = min(100, int(downloaded * 100 / total_size))
+                        self.progress.emit(percent, f'Downloading update… {percent}%')
+                    else:
+                        self.progress.emit(0, 'Downloading update…')
+
+            if not os.path.isfile(temp_path) or os.path.getsize(temp_path) == 0:
+                raise RuntimeError('Downloaded update is empty.')
+
+            self.progress.emit(100, 'Download complete. Installing update…')
+            self.done.emit(temp_path)
+        except urllib.error.HTTPError as exc:
+            if temp_path and os.path.exists(temp_path):
+                os.unlink(temp_path)
+            self.error.emit(f'Update download failed: HTTP {exc.code}')
+        except urllib.error.URLError as exc:
+            if temp_path and os.path.exists(temp_path):
+                os.unlink(temp_path)
+            self.error.emit(f'Update download failed: {exc.reason}')
+        except Exception as exc:
+            if temp_path and os.path.exists(temp_path):
+                os.unlink(temp_path)
+            self.error.emit(f'Update download failed: {exc}')
+
+
 # ── Main window ───────────────────────────────────────────────────────────────
 
 class MainWindow(QMainWindow):
@@ -785,6 +920,10 @@ class MainWindow(QMainWindow):
         self._thumbnail_active_key = None
         self._thumbnail_worker = None
         self._thumbnail_popup = ThumbnailPopup()
+        self._update_check_worker = None
+        self._update_download_worker = None
+        self._update_progress = None
+        self._pending_update_release = None
 
         self._build_ui()
         self._build_menu()
@@ -916,6 +1055,11 @@ class MainWindow(QMainWindow):
         self.sb.showMessage(
             "Open a video  —  Space: play/pause  |  I / O: set trim points  |  ← →: seek  |  ↑ ↓: volume"
         )
+        self.lbl_build = QLabel(APP_VERSION)
+        self.lbl_build.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.lbl_build.setStyleSheet("color: #93a1b7;")
+        self.lbl_build.setToolTip(runtime_executable_path())
+        self.sb.addPermanentWidget(self.lbl_build)
 
     def _build_menu(self):
         mb = self.menuBar()
@@ -925,7 +1069,173 @@ class MainWindow(QMainWindow):
         fm.addAction(QAction("Quit",  self, shortcut="Ctrl+Q", triggered=self.close))
 
         hm = mb.addMenu("Help")
+        hm.addAction(QAction("Check for Updates…", self, triggered=self._check_for_updates))
+        hm.addSeparator()
         hm.addAction(QAction("Uninstall LightFrame…", self, triggered=self._uninstall))
+
+    def _check_for_updates(self):
+        if self._update_check_worker and self._update_check_worker.isRunning():
+            return
+        self.sb.showMessage('Checking GitHub for updates…')
+        self._update_check_worker = UpdateCheckWorker()
+        self._update_check_worker.done.connect(self._update_check_done)
+        self._update_check_worker.error.connect(self._update_check_failed)
+        self._update_check_worker.start()
+
+    def _update_check_done(self, release_info):
+        self._update_check_worker = None
+        latest_tag = release_info.get('tag_name') or ''
+        asset_url = release_info.get('asset_url') or ''
+
+        if not latest_tag:
+            self.sb.showMessage('Update check failed.')
+            QMessageBox.warning(self, 'Check for Updates',
+                                'GitHub did not return a valid latest release tag.')
+            return
+
+        if not _is_newer_release(latest_tag, APP_VERSION):
+            self.sb.showMessage('LightFrame is up to date.')
+            QMessageBox.information(
+                self,
+                'Check for Updates',
+                f'You already have the newest version.\n\nCurrent version: {APP_VERSION}',
+            )
+            return
+
+        if not asset_url:
+            self.sb.showMessage(f'Latest release is missing {UPDATE_ASSET_NAME}.')
+            QMessageBox.warning(
+                self,
+                'Check for Updates',
+                f'A newer release exists ({latest_tag}), but it does not include {UPDATE_ASSET_NAME}.',
+            )
+            return
+
+        if not getattr(sys, 'frozen', False) or sys.platform != 'win32':
+            self.sb.showMessage(f'Update available: {latest_tag}')
+            QMessageBox.information(
+                self,
+                'Update Available',
+                f'A newer release is available.\n\nCurrent version: {APP_VERSION}\nLatest version: {latest_tag}\n\n'
+                'Self-update is only available in the packaged Windows build.',
+            )
+            return
+
+        reply = QMessageBox.question(
+            self,
+            'Update Available',
+            f'A newer release is available.\n\nCurrent version: {APP_VERSION}\n'
+            f'Latest version: {latest_tag}\n\nDownload and install it now?',
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if reply != QMessageBox.Yes:
+            self.sb.showMessage('Update cancelled.')
+            return
+
+        self._pending_update_release = dict(release_info)
+        self._start_update_download()
+
+    def _update_check_failed(self, message):
+        self._update_check_worker = None
+        self.sb.showMessage('Update check failed.')
+        QMessageBox.warning(self, 'Check for Updates', message)
+
+    def _show_update_progress(self, message):
+        self._close_update_progress()
+        self._update_progress = QProgressDialog(message, '', 0, 0, self)
+        self._update_progress.setWindowTitle('LightFrame Update')
+        self._update_progress.setWindowModality(Qt.ApplicationModal)
+        self._update_progress.setCancelButton(None)
+        self._update_progress.setMinimumDuration(0)
+        self._update_progress.setAutoClose(False)
+        self._update_progress.setAutoReset(False)
+        self._update_progress.setStyleSheet(STYLE)
+        self._update_progress.show()
+
+    def _close_update_progress(self):
+        if self._update_progress is not None:
+            self._update_progress.close()
+            self._update_progress.deleteLater()
+            self._update_progress = None
+
+    def _start_update_download(self):
+        if self._update_download_worker and self._update_download_worker.isRunning():
+            return
+        self._show_update_progress('Downloading update…')
+        self._update_download_worker = UpdateDownloadWorker(self._pending_update_release)
+        self._update_download_worker.progress.connect(self._update_download_progress)
+        self._update_download_worker.done.connect(self._update_download_done)
+        self._update_download_worker.error.connect(self._update_download_failed)
+        self._update_download_worker.start()
+
+    def _update_download_progress(self, percent, message):
+        if self._update_progress is None:
+            return
+        self._update_progress.setLabelText(message)
+        if percent > 0 and self._update_progress.maximum() == 0:
+            self._update_progress.setRange(0, 100)
+        if self._update_progress.maximum() > 0:
+            self._update_progress.setValue(percent)
+
+    def _update_download_done(self, downloaded_exe):
+        self._update_download_worker = None
+        self._close_update_progress()
+        try:
+            self._apply_downloaded_update(downloaded_exe)
+        except Exception as exc:
+            if os.path.exists(downloaded_exe):
+                os.unlink(downloaded_exe)
+            self.sb.showMessage('Update install failed.')
+            QMessageBox.critical(self, 'Update Failed', f'Could not install the update.\n\n{exc}')
+
+    def _update_download_failed(self, message):
+        self._update_download_worker = None
+        self._close_update_progress()
+        self.sb.showMessage('Update download failed.')
+        QMessageBox.warning(self, 'Update Failed', message)
+
+    def _apply_downloaded_update(self, downloaded_exe):
+        if not os.path.isfile(downloaded_exe):
+            raise RuntimeError('Downloaded update file was not found.')
+
+        target_exe = os.path.abspath(os.path.join(INSTALL_DIR, UPDATE_ASSET_NAME))
+        os.makedirs(INSTALL_DIR, exist_ok=True)
+
+        fd, tmp_bat = tempfile.mkstemp(prefix='lightframe_update_', suffix='.bat')
+        os.close(fd)
+
+        temp_esc = downloaded_exe.replace('"', '')
+        target_esc = target_exe.replace('"', '')
+        bat_lines = [
+            '@echo off',
+            'ping 127.0.0.1 -n 4 >nul',
+            ':retry_copy',
+            f'copy /y "{temp_esc}" "{target_esc}" >nul',
+            'if errorlevel 1 (',
+            '  ping 127.0.0.1 -n 2 >nul',
+            '  goto retry_copy',
+            ')',
+            f'del /f /q "{temp_esc}" >nul 2>&1',
+            f'start "" "{target_esc}"',
+            'del /f /q "%~f0" >nul 2>&1',
+        ]
+
+        with open(tmp_bat, 'w', encoding='utf-8', newline='\r\n') as handle:
+            handle.write('\r\n'.join(bat_lines))
+
+        subprocess.Popen(
+            ['cmd.exe', '/c', tmp_bat],
+            creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW,
+        )
+
+        self.sb.showMessage('Installing update and restarting…')
+        QMessageBox.information(
+            self,
+            'Installing Update',
+            'The new version has been downloaded. LightFrame will now close and restart to finish the update.',
+        )
+        self.close()
 
     def _uninstall(self):
         reply = QMessageBox.question(
@@ -965,7 +1275,14 @@ class MainWindow(QMainWindow):
                     winreg.DeleteKey(
                         winreg.HKEY_CURRENT_USER,
                         r'Software\Microsoft\Windows\CurrentVersion'
-                        r'\App Paths\LightFrame.exe')
+                        fr'\App Paths\{APP_EXE_NAME}')
+                except OSError:
+                    pass
+                try:
+                    winreg.DeleteKey(
+                        winreg.HKEY_CURRENT_USER,
+                        r'Software\Microsoft\Windows\CurrentVersion'
+                        fr'\App Paths\{LEGACY_APP_EXE_NAME}')
                 except OSError:
                     pass
             except Exception:
@@ -986,7 +1303,8 @@ class MainWindow(QMainWindow):
         # 3. Write a %TEMP% cleanup script; use cmd.exe (no execution-policy
         #    issues) to wait then delete only app-owned files.
         if sys.platform == 'win32':
-            inst_exe = os.path.abspath(os.path.join(INSTALL_DIR, 'LightFrame.exe'))
+            inst_exe = os.path.abspath(os.path.join(INSTALL_DIR, APP_EXE_NAME))
+            legacy_inst_exe = os.path.abspath(os.path.join(INSTALL_DIR, LEGACY_APP_EXE_NAME))
             install_dir = os.path.abspath(INSTALL_DIR)
 
             if (os.path.basename(install_dir).lower() == 'lightframe'
@@ -1004,6 +1322,10 @@ class MainWindow(QMainWindow):
                     '  goto retry_exe',
                     ')',
                 ]
+
+                legacy_exe_esc = legacy_inst_exe.replace('"', '')
+                if legacy_inst_exe.lower() != inst_exe.lower():
+                    bat_lines.append(f'del /f /q "{legacy_exe_esc}" >nul 2>&1')
 
                 for file_path in (
                     os.path.join(install_dir, 'ffmpeg.exe'),
@@ -1556,7 +1878,7 @@ class _SetupWorker(QThread):
 
     def run(self):
         install_dir  = INSTALL_DIR
-        installed_exe = os.path.join(install_dir, 'LightFrame.exe')
+        installed_exe = os.path.join(install_dir, APP_EXE_NAME)
 
         # 1. Download FFmpeg if not present
         ffmpeg_dst = os.path.join(install_dir, 'ffmpeg.exe')
@@ -1603,7 +1925,7 @@ class _SetupWorker(QThread):
 def _refresh_install():
     """
     Run on EVERY frozen startup:
-      1. Copy this exe to INSTALL_DIR/LightFrame.exe if it is different/newer.
+            1. Copy this exe to INSTALL_DIR/lightframe.exe if it is different/newer.
       2. Re-register the right-click context menu pointing to that exe.
     This is fast (pure file copy + registry writes) and ensures both the
     installed exe and the registry are always up-to-date regardless of whether
@@ -1613,8 +1935,9 @@ def _refresh_install():
         return
     import shutil
 
-    cur_exe  = os.path.abspath(sys.executable)
-    inst_exe = os.path.join(INSTALL_DIR, 'LightFrame.exe')
+    cur_exe = os.path.abspath(sys.executable)
+    inst_exe = os.path.join(INSTALL_DIR, APP_EXE_NAME)
+    legacy_inst_exe = os.path.join(INSTALL_DIR, LEGACY_APP_EXE_NAME)
 
     try:
         os.makedirs(INSTALL_DIR, exist_ok=True)
@@ -1636,6 +1959,20 @@ def _refresh_install():
                 shutil.copy2(cur_exe, inst_exe)
         except Exception:
             inst_exe = cur_exe   # fall back: register current location
+
+    if cur_exe.lower() != os.path.abspath(legacy_inst_exe).lower():
+        try:
+            do_copy = True
+            if os.path.isfile(legacy_inst_exe):
+                cur_stat = os.stat(cur_exe)
+                legacy_stat = os.stat(legacy_inst_exe)
+                if (cur_stat.st_size == legacy_stat.st_size and
+                        cur_stat.st_mtime <= legacy_stat.st_mtime):
+                    do_copy = False
+            if do_copy:
+                shutil.copy2(cur_exe, legacy_inst_exe)
+        except Exception:
+            pass
 
     if sys.platform != 'win32':
         return
@@ -1703,10 +2040,16 @@ def _refresh_install():
     # Register in HKCU App Paths so Windows Search finds it
     try:
         import winreg
-        app_key = r'Software\Microsoft\Windows\CurrentVersion\App Paths\LightFrame.exe'
+        app_key = fr'Software\Microsoft\Windows\CurrentVersion\App Paths\{APP_EXE_NAME}'
         with winreg.CreateKeyEx(
                 winreg.HKEY_CURRENT_USER, app_key,
                 0, winreg.KEY_SET_VALUE) as k:
+            winreg.SetValueEx(k, '',     0, winreg.REG_SZ, inst_exe)
+            winreg.SetValueEx(k, 'Path', 0, winreg.REG_SZ, INSTALL_DIR)
+        legacy_app_key = fr'Software\Microsoft\Windows\CurrentVersion\App Paths\{LEGACY_APP_EXE_NAME}'
+        with winreg.CreateKeyEx(
+            winreg.HKEY_CURRENT_USER, legacy_app_key,
+            0, winreg.KEY_SET_VALUE) as k:
             winreg.SetValueEx(k, '',     0, winreg.REG_SZ, inst_exe)
             winreg.SetValueEx(k, 'Path', 0, winreg.REG_SZ, INSTALL_DIR)
     except Exception:
