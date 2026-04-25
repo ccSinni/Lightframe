@@ -28,7 +28,7 @@ if sys.platform == 'win32' and hasattr(os, 'add_dll_directory'):
 INSTALL_DIR = os.path.join(
     os.environ.get('LOCALAPPDATA', os.path.expanduser('~')), 'LightFrame')
 
-APP_VERSION = 'v1.1'
+APP_VERSION = 'v.1.02'
 GITHUB_REPO = 'ccSinni/Lightframe'
 APP_EXE_NAME = 'lightframe.exe'
 LEGACY_APP_EXE_NAME = 'LightFrame.exe'
@@ -773,35 +773,20 @@ def ffmpeg_available():
         return False
 
 
-def _release_version_tuple(tag):
-    cleaned = (tag or '').strip().lstrip('vV').lstrip('.')
+def _normalize_release_tag(tag):
+    cleaned = (tag or '').strip()
     if not cleaned:
-        return ()
-    parts = []
-    for chunk in cleaned.replace('-', '.').split('.'):
-        digits = ''.join(ch for ch in chunk if ch.isdigit())
-        if not digits:
-            break
-        parts.append(int(digits))
-    return tuple(parts)
-
-
-def _is_date_based_version(version_parts):
-    return len(version_parts) >= 3 and version_parts[0] >= 2000
+        return ''
+    if cleaned[0] in ('v', 'V'):
+        cleaned = cleaned[1:]
+    cleaned = cleaned.lstrip('.')
+    return cleaned.lower()
 
 
 def _is_newer_release(latest_tag, current_tag):
-    latest_version = _release_version_tuple(latest_tag)
-    current_version = _release_version_tuple(current_tag)
-    if latest_version and current_version:
-        latest_is_date = _is_date_based_version(latest_version)
-        current_is_date = _is_date_based_version(current_version)
-        if latest_is_date != current_is_date:
-            # Allow a one-time migration from the legacy date-based tag scheme
-            # to semantic versions such as v1.1.
-            return current_is_date and not latest_is_date
-        return latest_version > current_version
-    return bool(latest_tag) and latest_tag != current_tag
+    latest_normalized = _normalize_release_tag(latest_tag)
+    current_normalized = _normalize_release_tag(current_tag)
+    return bool(latest_normalized) and latest_normalized != current_normalized
 
 
 def _fetch_json(url):
