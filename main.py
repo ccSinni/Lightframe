@@ -49,7 +49,7 @@ def _want_desktop_shortcut() -> bool:
 # Backward-compat alias; use get_install_dir() in code
 INSTALL_DIR = _DEFAULT_INSTALL_DIR
 
-APP_VERSION = 'v.1.14'
+APP_VERSION = 'v.1.15'
 GITHUB_REPO = 'ccSinni/Lightframe'
 APP_EXE_NAME = 'lightframe.exe'
 LEGACY_APP_EXE_NAME = 'LightFrame.exe'
@@ -2425,11 +2425,14 @@ def _apply_pending_update():
     the current lightframe.exe. This allows updates to be applied without
     batch scripts or process detection - the new exe is just launched on
     the next startup.
+
+    Note: Called before QApplication is created, so we can't use QSettings.
     """
     if not getattr(sys, 'frozen', False):
         return  # Only applies to frozen exe
 
-    install_dir = get_install_dir()
+    # Use default install dir directly (QApplication not yet created)
+    install_dir = _DEFAULT_INSTALL_DIR
     os.makedirs(install_dir, exist_ok=True)
 
     update_staging = os.path.join(install_dir, 'lightframe_update.exe')
