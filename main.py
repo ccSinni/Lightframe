@@ -1430,7 +1430,6 @@ class MainWindow(QMainWindow):
         subprocess.Popen(
             f'cmd.exe /c "{tmp_bat}"',
             shell=True,
-            creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW,
         )
 
         self.sb.showMessage('Installing update and restarting…')
