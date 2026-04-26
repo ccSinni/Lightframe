@@ -1382,47 +1382,47 @@ class MainWindow(QMainWindow):
             raise RuntimeError('Downloaded update file was not found.')
 
         os.makedirs(get_install_dir(), exist_ok=True)
-        target_exes = update_target_executables()
-        # Always launch from install_dir/lightframe.exe, not from the currently running exe
-        # (which is locked and can't be replaced)
-        launch_exe = os.path.join(get_install_dir(), APP_EXE_NAME)
+        install_dir = get_install_dir()
+        launch_exe = os.path.join(install_dir, APP_EXE_NAME)
 
         fd, tmp_bat = tempfile.mkstemp(prefix='lightframe_update_', suffix='.bat')
         os.close(fd)
 
-        # Log file for debugging update issues
-        log_file = os.path.join(tempfile.gettempdir(), 'lightframe_update.log')
-
+        # Simple, reliable batch script that waits for old process to close, copies exe, and launches
         temp_esc = downloaded_exe.replace('"', '')
+        launch_esc = launch_exe.replace('"', '')
+
         bat_lines = [
             '@echo off',
-            f'echo Update started at %date% %time% >> "{log_file}"',
-            'ping 127.0.0.1 -n 5 >nul',
-        ]
-
-        for index, target_exe in enumerate(target_exes, start=1):
-            target_esc = target_exe.replace('"', '')
-            bat_lines.extend([
-                f':retry_copy_{index}',
-                f'echo Copying to {target_exe} >> "{log_file}"',
-                f'copy /y "{temp_esc}" "{target_esc}" >> "{log_file}" 2>&1',
-                'if errorlevel 1 (',
-                f'  echo ERROR: Copy failed with code %errorlevel% >> "{log_file}"',
-                '  ping 127.0.0.1 -n 2 >nul',
-                f'  goto retry_copy_{index}',
-                ')',
-                f'echo Copy successful to {target_exe} >> "{log_file}"',
-            ])
-
-        launch_esc = launch_exe.replace('"', '')
-        bat_lines.extend([
-            f'echo Launching {launch_exe} >> "{log_file}"',
+            'setlocal enabledelayedexpansion',
+            'REM Wait for old process to close (up to 30 seconds)',
+            'set /a count=0',
+            ':wait_loop',
+            f'if exist "{launch_esc}" (',
+            '  tasklist /FI "imagename eq lightframe.exe" 2>NUL | find /I /N "lightframe.exe">NUL',
+            '  if errorlevel 1 (',
+            '    REM Process is closed, break out of loop',
+            '    goto do_copy',
+            '  )',
+            '  set /a count=!count!+1',
+            '  if !count! geq 30 (',
+            '    REM Timeout after 30 seconds, try copy anyway',
+            '    goto do_copy',
+            '  )',
+            '  timeout /t 1 /nobreak >nul',
+            '  goto wait_loop',
+            ')',
+            ':do_copy',
+            f'copy /y "{temp_esc}" "{launch_esc}" >nul 2>&1',
+            'if errorlevel 1 (',
+            '  timeout /t 2 /nobreak >nul',
+            f'  copy /y "{temp_esc}" "{launch_esc}" >nul 2>&1',
+            ')',
             f'del /f /q "{temp_esc}" >nul 2>&1',
-            f'start "" "{launch_esc}" >> "{log_file}" 2>&1',
-            f'echo Restart command executed >> "{log_file}"',
-            'ping 127.0.0.1 -n 2 >nul',
+            f'start "" "{launch_esc}"',
+            'timeout /t 1 /nobreak >nul',
             'del /f /q "%~f0" >nul 2>&1',
-        ])
+        ]
 
         with open(tmp_bat, 'w', encoding='utf-8', newline='\r\n') as handle:
             handle.write('\r\n'.join(bat_lines))
@@ -1438,8 +1438,8 @@ class MainWindow(QMainWindow):
             'Installing Update',
             'The new version has been downloaded. LightFrame will now close and restart to finish the update.',
         )
-        # Add a small delay to ensure the batch process starts before we close
-        QTimer.singleShot(500, self.close)
+        # Close immediately - batch script waits for process to terminate
+        self.close()
 
     def _uninstall(self):
         reply = QMessageBox.question(
