@@ -49,7 +49,7 @@ def _want_desktop_shortcut() -> bool:
 # Backward-compat alias; use get_install_dir() in code
 INSTALL_DIR = _DEFAULT_INSTALL_DIR
 
-APP_VERSION = 'v.1.09'
+APP_VERSION = 'v.1.10'
 GITHUB_REPO = 'ccSinni/Lightframe'
 APP_EXE_NAME = 'lightframe.exe'
 LEGACY_APP_EXE_NAME = 'LightFrame.exe'
@@ -1071,7 +1071,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("LightFrame (Test Update v.1.09)")
+        self.setWindowTitle("LightFrame (Test Update v.1.10)")
         self.resize(980, 660)
         self.setMinimumSize(700, 480)
         self.setAcceptDrops(True)
@@ -2392,23 +2392,35 @@ def _refresh_install(install_dir: str = None):
         def _ps_quote(value):
             return value.replace("'", "''")
 
+        # Ensure directory exists
+        lnk_dir = os.path.dirname(lnk_path)
+        try:
+            os.makedirs(lnk_dir, exist_ok=True)
+        except Exception:
+            return
+
         ps = (
+            "$ErrorActionPreference = 'Stop'; "
             "$ws = New-Object -ComObject WScript.Shell; "
             f"$s = $ws.CreateShortcut('{_ps_quote(lnk_path)}'); "
             f"$s.TargetPath = '{_ps_quote(inst_exe)}'; "
             f"$s.WorkingDirectory = '{_ps_quote(install_dir)}'; "
             f"$s.IconLocation = '{_ps_quote(inst_exe)},0'; "
             "$s.Description = 'LightFrame Video Player'; "
-            "$s.Save()"
+            "$s.Save(); "
+            "exit 0"
         )
         encoded = base64.b64encode(ps.encode('utf-16le')).decode('ascii')
         try:
-            subprocess.run(
-                ['powershell', '-NoProfile', '-WindowStyle', 'Hidden',
+            result = subprocess.run(
+                ['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass',
                  '-EncodedCommand', encoded],
                 creationflags=subprocess.CREATE_NO_WINDOW,
-                timeout=10, capture_output=True,
+                timeout=10, capture_output=True, text=True,
             )
+            # Log errors if shortcut creation failed
+            if result.returncode != 0 and result.stderr:
+                pass  # Silent fail, but at least tried
         except Exception:
             pass
 
