@@ -49,7 +49,7 @@ def _want_desktop_shortcut() -> bool:
 # Backward-compat alias; use get_install_dir() in code
 INSTALL_DIR = _DEFAULT_INSTALL_DIR
 
-APP_VERSION = 'v.1.04'
+APP_VERSION = 'v.1.05'
 GITHUB_REPO = 'ccSinni/Lightframe'
 APP_EXE_NAME = 'lightframe.exe'
 LEGACY_APP_EXE_NAME = 'LightFrame.exe'
@@ -78,7 +78,7 @@ except ImportError:
 
 # ── Stylesheet ────────────────────────────────────────────────────────────────
 
-STYLE = """
+DARK_STYLE = """
 QMainWindow, QWidget {
     background: #12161d;
     color: #e7edf7;
@@ -179,6 +179,131 @@ QToolTip {
     padding: 4px 6px;
 }
 """
+
+LIGHT_STYLE = """
+QMainWindow, QWidget {
+    background: #f5f5f5;
+    color: #1a1a1a;
+    font-family: "Segoe UI", sans-serif;
+    font-size: 9pt;
+}
+QPushButton {
+    background: #e8e8e8;
+    color: #1a1a1a;
+    border: 1px solid #cccccc;
+    border-radius: 5px;
+    padding: 6px 14px;
+    min-height: 24px;
+}
+QPushButton:hover   { background: #d9d9d9; border-color: #2196F3; }
+QPushButton:pressed { background: #1976D2; border-color: #1565C0; color: #ffffff; }
+QPushButton:disabled { color: #999999; border-color: #e0e0e0; background: #fafafa; }
+QPushButton:checked {
+    background: #2196F3;
+    border-color: #1565C0;
+    color: #ffffff;
+}
+
+QSlider::groove:horizontal {
+    background: #d0d0d0; height: 6px; border-radius: 3px;
+}
+QSlider::handle:horizontal {
+    background: #ffffff;
+    width: 13px; height: 13px;
+    margin: -4px 0; border-radius: 6px;
+    border: 1px solid #2196F3;
+}
+QSlider::sub-page:horizontal { background: #2196F3; border-radius: 3px; }
+
+QGroupBox {
+    background: #fafafa;
+    border: 1px solid #e0e0e0;
+    border-radius: 6px;
+    margin-top: 10px;
+    padding-top: 8px;
+    font-weight: bold;
+    color: #1a1a1a;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 10px;
+    padding: 0 5px;
+    color: #2196F3;
+}
+
+QMenuBar {
+    background: #ffffff;
+    color: #1a1a1a;
+    border-bottom: 1px solid #e0e0e0;
+}
+QMenuBar::item { background: transparent; padding: 4px 10px; }
+QMenuBar::item:selected { background: #f0f0f0; }
+QMenu {
+    background: #ffffff;
+    border: 1px solid #e0e0e0;
+    color: #1a1a1a;
+}
+QMenu::item { padding: 6px 20px; }
+QMenu::item:selected { background: #f0f0f0; }
+
+QStatusBar {
+    background: #ffffff;
+    color: #666666;
+    font-size: 8pt;
+    border-top: 1px solid #e0e0e0;
+}
+QStatusBar::item { border: none; }
+
+QCheckBox { color: #333333; spacing: 6px; }
+QCheckBox::indicator {
+    width: 14px; height: 14px;
+    background: #ffffff;
+    border: 1px solid #999999;
+    border-radius: 3px;
+}
+QCheckBox::indicator:checked { background: #2196F3; border-color: #1565C0; }
+
+QLabel { background: transparent; }
+
+QProgressDialog {
+    background: #ffffff;
+    border: 1px solid #e0e0e0;
+}
+
+QProgressDialog QLabel {
+    color: #1a1a1a;
+    min-width: 320px;
+}
+
+QToolTip {
+    color: #1a1a1a;
+    background: #fffacd;
+    border: 1px solid #e0e0e0;
+    padding: 4px 6px;
+}
+"""
+
+def get_theme() -> str:
+    """Get current theme preference (dark or light)."""
+    s = QSettings("LightFrame", "LightFrame")
+    return s.value("theme", "dark")
+
+def get_style() -> str:
+    """Get the current stylesheet based on theme preference."""
+    return DARK_STYLE if get_theme() == "dark" else LIGHT_STYLE
+
+def set_theme(app, window, theme: str):
+    """Change theme and apply to application."""
+    s = QSettings("LightFrame", "LightFrame")
+    s.setValue("theme", theme)
+    s.sync()
+    style = DARK_STYLE if theme == "dark" else LIGHT_STYLE
+    app.setStyleSheet(style)
+    if window:
+        window.setStyleSheet(style)
+
+# Default to DARK_STYLE for now
+STYLE = DARK_STYLE
 
 
 # ── FFmpeg export worker ──────────────────────────────────────────────────────
@@ -983,7 +1108,7 @@ class MainWindow(QMainWindow):
         self._thumbnail_timer.setInterval(120)
         self._thumbnail_timer.timeout.connect(self._process_thumbnail_request)
 
-        self.setStyleSheet(STYLE)
+        self.setStyleSheet(get_style())
 
         # Restore window geometry from last session
         settings = QSettings("Anthropic", "LightFrame")
@@ -1108,6 +1233,17 @@ class MainWindow(QMainWindow):
         hm = mb.addMenu("Help")
         hm.addAction(QAction("Check for Updates…", self, triggered=self._check_for_updates))
         hm.addSeparator()
+
+        # Theme toggle
+        current_theme = get_theme()
+        self._theme_action = QAction(
+            "☀ Light Mode" if current_theme == "dark" else "🌙 Dark Mode",
+            self,
+            triggered=self._toggle_theme
+        )
+        hm.addAction(self._theme_action)
+        hm.addSeparator()
+
         hm.addAction(QAction("Uninstall LightFrame…", self, triggered=self._uninstall))
 
     def _check_for_updates(self):
@@ -1187,7 +1323,7 @@ class MainWindow(QMainWindow):
         self._update_progress.setMinimumDuration(0)
         self._update_progress.setAutoClose(False)
         self._update_progress.setAutoReset(False)
-        self._update_progress.setStyleSheet(STYLE)
+        self._update_progress.setStyleSheet(get_style())
         self._update_progress.show()
 
     def _close_update_progress(self):
@@ -1410,6 +1546,14 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "Uninstall LightFrame",
                                 "LightFrame has been uninstalled.")
         self.close()
+
+    def _toggle_theme(self):
+        current = get_theme()
+        new_theme = "light" if current == "dark" else "dark"
+        set_theme(QApplication.instance(), self, new_theme)
+        self._theme_action.setText(
+            "🌙 Dark Mode" if new_theme == "light" else "☀ Light Mode"
+        )
 
     def _build_shortcuts(self):
         def sc(key, fn):
@@ -1875,7 +2019,7 @@ class SetupDialog(QWidget):
         super().__init__()
         self.setWindowTitle("LightFrame — Setup")
         self.setFixedSize(480, 310)
-        self.setStyleSheet(STYLE)
+        self.setStyleSheet(get_style())
         self._install_dir = None
         self._want_shortcut = True
         self._thread = None
@@ -1987,6 +2131,20 @@ class SetupDialog(QWidget):
                 QMessageBox.warning(self, "Setup", "Please enter or browse to an install location.")
                 return
 
+        # Check if Program Files is selected and needs elevation
+        if idx == 1:
+            reply = QMessageBox.question(
+                self,
+                "Administrator Access Required",
+                f"Installing to Program Files requires administrator privileges.\n\n"
+                f"LightFrame will request elevated permissions to proceed.\n\n"
+                f"Click 'OK' to continue with the administrator prompt.",
+                QMessageBox.Ok | QMessageBox.Cancel,
+                QMessageBox.Ok
+            )
+            if reply != QMessageBox.Ok:
+                return
+
         # Test writability
         try:
             os.makedirs(chosen, exist_ok=True)
@@ -1995,10 +2153,18 @@ class SetupDialog(QWidget):
                 f.write('test')
             os.unlink(probe)
         except OSError as e:
-            QMessageBox.warning(
-                self, "Cannot write to that location",
-                f"LightFrame cannot write to:\n  {chosen}\n\n"
-                f"Choose a different location or run as administrator.\n\n{e}")
+            # If Program Files and no write access, suggest elevation
+            if idx == 1:
+                QMessageBox.critical(
+                    self, "Access Denied",
+                    f"Unable to write to Program Files.\n\n"
+                    f"Please run this installer as Administrator and try again.\n\n"
+                    f"Error: {e}")
+            else:
+                QMessageBox.warning(
+                    self, "Cannot write to that location",
+                    f"LightFrame cannot write to:\n  {chosen}\n\n"
+                    f"Choose a different location or check permissions.\n\n{e}")
             return
 
         self._install_dir = chosen
