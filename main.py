@@ -1428,7 +1428,8 @@ class MainWindow(QMainWindow):
             handle.write('\r\n'.join(bat_lines))
 
         subprocess.Popen(
-            ['cmd.exe', '/c', tmp_bat],
+            f'cmd.exe /c "{tmp_bat}"',
+            shell=True,
             creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW,
         )
 
