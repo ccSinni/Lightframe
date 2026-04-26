@@ -25,10 +25,31 @@ if sys.platform == 'win32' and hasattr(os, 'add_dll_directory'):
     os.add_dll_directory(_here)
 
 # Dedicated install folder — all user-facing files live here
-INSTALL_DIR = os.path.join(
+_DEFAULT_INSTALL_DIR = os.path.join(
     os.environ.get('LOCALAPPDATA', os.path.expanduser('~')), 'LightFrame')
 
-APP_VERSION = 'v.1.03'
+def get_install_dir() -> str:
+    """Return the active install directory from QSettings, or the default."""
+    from PyQt5.QtCore import QSettings
+    s = QSettings("LightFrame", "LightFrame")
+    return s.value("install_dir", _DEFAULT_INSTALL_DIR)
+
+def _save_install_prefs(install_dir: str, create_desktop_shortcut: bool):
+    """Save install directory and shortcut preference to QSettings."""
+    s = QSettings("LightFrame", "LightFrame")
+    s.setValue("install_dir", install_dir)
+    s.setValue("create_desktop_shortcut", create_desktop_shortcut)
+    s.sync()
+
+def _want_desktop_shortcut() -> bool:
+    """Read desktop shortcut preference from QSettings; default True."""
+    s = QSettings("LightFrame", "LightFrame")
+    return bool(s.value("create_desktop_shortcut", True))
+
+# Backward-compat alias; use get_install_dir() in code
+INSTALL_DIR = _DEFAULT_INSTALL_DIR
+
+APP_VERSION = 'v.1.04'
 GITHUB_REPO = 'ccSinni/Lightframe'
 APP_EXE_NAME = 'lightframe.exe'
 LEGACY_APP_EXE_NAME = 'LightFrame.exe'
@@ -43,6 +64,7 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QSlider, QLabel, QFileDialog, QCheckBox, QGroupBox,
     QMessageBox, QSizePolicy, QStatusBar, QAction, QShortcut, QProgressDialog,
+    QComboBox, QLineEdit,
 )
 from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal, QSettings, QPoint
 from PyQt5.QtGui import QFont, QKeySequence, QColor, QPainter, QPen, QPixmap
@@ -725,13 +747,13 @@ def ffmpeg_exe():
     """
     Return the path to ffmpeg to use.
     Priority:
-      1. INSTALL_DIR\ffmpeg.exe  (normal installed location)
+      1. install_dir\ffmpeg.exe  (normal installed location)
             2. next to the packaged app executable (portable / dev)
       3. resolved absolute ffmpeg.exe from PATH, excluding cwd and temp dirs
     """
     exe_dir = os.path.dirname(sys.executable if getattr(sys, 'frozen', False)
                               else os.path.abspath(__file__))
-    for d in (INSTALL_DIR, exe_dir):
+    for d in (get_install_dir(), exe_dir):
         f = os.path.join(d, 'ffmpeg.exe')
         if os.path.isfile(f):
             return f
@@ -819,9 +841,10 @@ def runtime_executable_path():
 
 
 def update_target_executables():
+    install_dir = get_install_dir()
     targets = [
-        os.path.abspath(os.path.join(INSTALL_DIR, APP_EXE_NAME)),
-        os.path.abspath(os.path.join(INSTALL_DIR, LEGACY_APP_EXE_NAME)),
+        os.path.abspath(os.path.join(install_dir, APP_EXE_NAME)),
+        os.path.abspath(os.path.join(install_dir, LEGACY_APP_EXE_NAME)),
     ]
     if getattr(sys, 'frozen', False):
         targets.append(runtime_executable_path())
@@ -1213,34 +1236,42 @@ class MainWindow(QMainWindow):
         if not os.path.isfile(downloaded_exe):
             raise RuntimeError('Downloaded update file was not found.')
 
-        os.makedirs(INSTALL_DIR, exist_ok=True)
+        os.makedirs(get_install_dir(), exist_ok=True)
         target_exes = update_target_executables()
         launch_exe = runtime_executable_path() if getattr(sys, 'frozen', False) else target_exes[0]
 
         fd, tmp_bat = tempfile.mkstemp(prefix='lightframe_update_', suffix='.bat')
         os.close(fd)
 
+        # Log file for debugging update issues
+        log_file = os.path.join(tempfile.gettempdir(), 'lightframe_update.log')
+
         temp_esc = downloaded_exe.replace('"', '')
         bat_lines = [
             '@echo off',
-            'ping 127.0.0.1 -n 4 >nul',
+            f'echo Update started at %date% %time% >> "{log_file}"',
+            'ping 127.0.0.1 -n 2 >nul',
         ]
 
         for index, target_exe in enumerate(target_exes, start=1):
             target_esc = target_exe.replace('"', '')
             bat_lines.extend([
                 f':retry_copy_{index}',
+                f'echo Copying to {target_exe} >> "{log_file}"',
                 f'copy /y "{temp_esc}" "{target_esc}" >nul',
                 'if errorlevel 1 (',
                 '  ping 127.0.0.1 -n 2 >nul',
-                f'  goto retry_copy_{index}',
+                '  if errorlevel 1 goto retry_copy_{index}',
                 ')',
             ])
 
         launch_esc = launch_exe.replace('"', '')
         bat_lines.extend([
+            f'echo Launching {launch_exe} >> "{log_file}"',
             f'del /f /q "{temp_esc}" >nul 2>&1',
-            f'start "" "{launch_esc}"',
+            f'start "" "{launch_esc}" >> "{log_file}" 2>&1',
+            f'echo Restart command executed >> "{log_file}"',
+            'ping 127.0.0.1 -n 2 >nul',
             'del /f /q "%~f0" >nul 2>&1',
         ])
 
@@ -1258,7 +1289,8 @@ class MainWindow(QMainWindow):
             'Installing Update',
             'The new version has been downloaded. LightFrame will now close and restart to finish the update.',
         )
-        self.close()
+        # Add a small delay to ensure the batch process starts before we close
+        QTimer.singleShot(500, self.close)
 
     def _uninstall(self):
         reply = QMessageBox.question(
@@ -1326,9 +1358,9 @@ class MainWindow(QMainWindow):
         # 3. Write a %TEMP% cleanup script; use cmd.exe (no execution-policy
         #    issues) to wait then delete only app-owned files.
         if sys.platform == 'win32':
-            inst_exe = os.path.abspath(os.path.join(INSTALL_DIR, APP_EXE_NAME))
-            legacy_inst_exe = os.path.abspath(os.path.join(INSTALL_DIR, LEGACY_APP_EXE_NAME))
-            install_dir = os.path.abspath(INSTALL_DIR)
+            install_dir = os.path.abspath(get_install_dir())
+            inst_exe = os.path.abspath(os.path.join(install_dir, APP_EXE_NAME))
+            legacy_inst_exe = os.path.abspath(os.path.join(install_dir, LEGACY_APP_EXE_NAME))
 
             if (os.path.basename(install_dir).lower() == 'lightframe'
                     and os.path.commonpath([inst_exe, install_dir]) == install_dir):
@@ -1832,61 +1864,204 @@ class MainWindow(QMainWindow):
 # ── First-run setup ───────────────────────────────────────────────────────────
 
 class SetupDialog(QWidget):
-    """Shown on first run (when frozen) to download FFmpeg and create shortcut."""
+    """Two-phase installer: location picker, then FFmpeg download."""
     finished = pyqtSignal()
+
+    _APPDATA_ITEM = "AppData (recommended)"
+    _PROGFILES_ITEM = r"C:\Program Files\LightFrame"
+    _CUSTOM_ITEM = "Custom…"
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("LightFrame — First Run Setup")
-        self.setFixedSize(440, 180)
+        self.setWindowTitle("LightFrame — Setup")
+        self.setFixedSize(480, 310)
         self.setStyleSheet(STYLE)
+        self._install_dir = None
+        self._want_shortcut = True
+        self._thread = None
+        self._worker = None
 
-        lay = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+
+        # Phase 0: Picker page
+        self._picker_page = QWidget()
+        self._build_picker_ui()
+        outer.addWidget(self._picker_page)
+
+        # Phase 1: Progress page
+        self._progress_page = QWidget()
+        self._build_progress_ui()
+        outer.addWidget(self._progress_page)
+        self._progress_page.setVisible(False)
+
+    def _build_picker_ui(self):
+        lay = QVBoxLayout(self._picker_page)
         lay.setContentsMargins(20, 20, 20, 20)
         lay.setSpacing(10)
 
-        self.lbl = QLabel("Setting up LightFrame…")
-        self.lbl.setStyleSheet("font-size: 11pt; font-weight: bold; color: #e7edf7;")
-        self.lbl.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self.sub = QLabel("Downloading FFmpeg for trim/export support…")
-        self.sub.setStyleSheet("color: #93a1b7;")
-        self.sub.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self.bar = QSlider(Qt.Horizontal)   # repurposed as a progress indicator
-        self.bar.setRange(0, 100)
-        self.bar.setEnabled(False)
-        self.bar.setStyleSheet("""
+        title = QLabel("Install LightFrame")
+        title.setStyleSheet("font-size: 11pt; font-weight: bold; color: #e7edf7;")
+        title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+
+        subtitle = QLabel("Choose where to install LightFrame.")
+        subtitle.setStyleSheet("color: #93a1b7;")
+        subtitle.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+
+        loc_label = QLabel("Install location")
+        loc_label.setStyleSheet("font-weight: bold; color: #d4e4fa;")
+
+        self._combo = QComboBox()
+        self._combo.addItems([
+            self._APPDATA_ITEM,
+            self._PROGFILES_ITEM,
+            self._CUSTOM_ITEM,
+        ])
+        self._combo.currentIndexChanged.connect(self._on_combo_changed)
+
+        # Custom path row (hidden initially)
+        custom_lay = QHBoxLayout()
+        self._custom_edit = QLineEdit()
+        self._custom_edit.setText(_DEFAULT_INSTALL_DIR)
+        browse_btn = QPushButton("Browse…")
+        browse_btn.setMaximumWidth(100)
+        browse_btn.clicked.connect(self._on_browse)
+        custom_lay.addWidget(self._custom_edit)
+        custom_lay.addWidget(browse_btn)
+        self._custom_row = QWidget()
+        self._custom_row.setLayout(custom_lay)
+        self._custom_row.setVisible(False)
+
+        # Warning label for Program Files
+        self._warning_lbl = QLabel("Note: Program Files may require administrator rights.")
+        self._warning_lbl.setStyleSheet("color: #ff9f43; font-size: 8pt;")
+        self._warning_lbl.setVisible(False)
+
+        # Desktop shortcut checkbox
+        self._shortcut_cb = QCheckBox("Create Desktop shortcut")
+        self._shortcut_cb.setChecked(True)
+
+        # Install button
+        self._install_btn = QPushButton("Install")
+        self._install_btn.setMinimumWidth(100)
+        self._install_btn.clicked.connect(self._on_install_clicked)
+
+        lay.addWidget(title)
+        lay.addWidget(subtitle)
+        lay.addSpacing(10)
+        lay.addWidget(loc_label)
+        lay.addWidget(self._combo)
+        lay.addWidget(self._custom_row)
+        lay.addWidget(self._warning_lbl)
+        lay.addSpacing(5)
+        lay.addWidget(self._shortcut_cb)
+        lay.addStretch()
+        lay.addWidget(self._install_btn, alignment=Qt.AlignRight)
+
+    def _on_combo_changed(self):
+        idx = self._combo.currentIndex()
+        if idx == 2:  # Custom
+            self._custom_row.setVisible(True)
+            self._warning_lbl.setVisible(False)
+        elif idx == 1:  # Program Files
+            self._custom_row.setVisible(False)
+            self._warning_lbl.setVisible(True)
+        else:  # AppData
+            self._custom_row.setVisible(False)
+            self._warning_lbl.setVisible(False)
+
+    def _on_browse(self):
+        path = QFileDialog.getExistingDirectory(self, "Choose install location")
+        if path:
+            self._custom_edit.setText(path)
+
+    def _on_install_clicked(self):
+        idx = self._combo.currentIndex()
+        if idx == 0:
+            chosen = _DEFAULT_INSTALL_DIR
+        elif idx == 1:
+            chosen = self._PROGFILES_ITEM
+        else:
+            chosen = self._custom_edit.text().strip()
+            if not chosen:
+                QMessageBox.warning(self, "Setup", "Please enter or browse to an install location.")
+                return
+
+        # Test writability
+        try:
+            os.makedirs(chosen, exist_ok=True)
+            probe = os.path.join(chosen, '.write_test')
+            with open(probe, 'w') as f:
+                f.write('test')
+            os.unlink(probe)
+        except OSError as e:
+            QMessageBox.warning(
+                self, "Cannot write to that location",
+                f"LightFrame cannot write to:\n  {chosen}\n\n"
+                f"Choose a different location or run as administrator.\n\n{e}")
+            return
+
+        self._install_dir = chosen
+        self._want_shortcut = self._shortcut_cb.isChecked()
+        _save_install_prefs(chosen, self._want_shortcut)
+
+        # Switch to progress page
+        self._picker_page.setVisible(False)
+        self._progress_page.setVisible(True)
+        self.setFixedSize(440, 180)
+
+        # Start worker
+        self._thread = QThread()
+        self._worker = _SetupWorker(chosen)
+        self._worker.moveToThread(self._thread)
+        self._thread.started.connect(self._worker.run)
+        self._worker.progress.connect(self._on_progress)
+        self._worker.done.connect(self._on_setup_done)
+        self._worker.error.connect(self._on_error)
+        self._thread.start()
+
+    def _build_progress_ui(self):
+        lay = QVBoxLayout(self._progress_page)
+        lay.setContentsMargins(20, 20, 20, 20)
+        lay.setSpacing(10)
+
+        self._lbl = QLabel("Setting up LightFrame…")
+        self._lbl.setStyleSheet("font-size: 11pt; font-weight: bold; color: #e7edf7;")
+        self._lbl.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+
+        self._sub = QLabel("Downloading FFmpeg for trim/export support…")
+        self._sub.setStyleSheet("color: #93a1b7;")
+        self._sub.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+
+        self._bar = QSlider(Qt.Horizontal)
+        self._bar.setRange(0, 100)
+        self._bar.setEnabled(False)
+        self._bar.setStyleSheet("""
             QSlider::groove:horizontal { background:#25303c; height:8px; border-radius:4px; }
             QSlider::sub-page:horizontal { background:#4aa3ff; border-radius:4px; }
             QSlider::handle:horizontal { width:0px; }
         """)
 
-        lay.addWidget(self.lbl)
-        lay.addWidget(self.sub)
-        lay.addWidget(self.bar)
+        lay.addWidget(self._lbl)
+        lay.addWidget(self._sub)
+        lay.addWidget(self._bar)
         lay.addStretch()
 
-        self._thread = QThread()
-        self._worker = _SetupWorker()
-        self._worker.moveToThread(self._thread)
-        self._thread.started.connect(self._worker.run)
-        self._worker.progress.connect(self._on_progress)
-        self._worker.done.connect(self._on_done)
-        self._worker.error.connect(self._on_error)
-        self._thread.start()
-
     def _on_progress(self, pct, msg):
-        self.bar.setValue(pct)
-        self.sub.setText(msg)
+        self._bar.setValue(pct)
+        self._sub.setText(msg)
 
-    def _on_done(self):
+    def _on_setup_done(self):
         self._thread.quit()
-        self.bar.setValue(100)
-        self.sub.setText("Done!")
+        self._bar.setValue(100)
+        self._sub.setText("Done!")
+        # Call _refresh_install with the chosen path
+        _refresh_install(self._install_dir)
         QTimer.singleShot(600, self._finish)
 
     def _on_error(self, msg):
         self._thread.quit()
-        self.sub.setText(f"Warning: {msg}")
+        self._sub.setText(f"Warning: {msg}")
         QTimer.singleShot(1500, self._finish)
 
     def _finish(self):
@@ -1899,8 +2074,12 @@ class _SetupWorker(QThread):
     done     = pyqtSignal()
     error    = pyqtSignal(str)
 
+    def __init__(self, install_dir: str):
+        super().__init__()
+        self.install_dir = install_dir
+
     def run(self):
-        install_dir  = INSTALL_DIR
+        install_dir = self.install_dir
         installed_exe = os.path.join(install_dir, APP_EXE_NAME)
 
         # 1. Download FFmpeg if not present
@@ -1945,10 +2124,10 @@ class _SetupWorker(QThread):
         self.done.emit()
 
 
-def _refresh_install():
+def _refresh_install(install_dir: str = None):
     """
     Run on EVERY frozen startup:
-            1. Copy this exe to INSTALL_DIR/lightframe.exe if it is different/newer.
+            1. Copy this exe to install_dir/lightframe.exe if it is different/newer.
       2. Re-register the right-click context menu pointing to that exe.
     This is fast (pure file copy + registry writes) and ensures both the
     installed exe and the registry are always up-to-date regardless of whether
@@ -1956,14 +2135,16 @@ def _refresh_install():
     """
     if not getattr(sys, 'frozen', False):
         return
+    if install_dir is None:
+        install_dir = get_install_dir()
     import shutil
 
     cur_exe = os.path.abspath(sys.executable)
-    inst_exe = os.path.join(INSTALL_DIR, APP_EXE_NAME)
-    legacy_inst_exe = os.path.join(INSTALL_DIR, LEGACY_APP_EXE_NAME)
+    inst_exe = os.path.join(install_dir, APP_EXE_NAME)
+    legacy_inst_exe = os.path.join(install_dir, LEGACY_APP_EXE_NAME)
 
     try:
-        os.makedirs(INSTALL_DIR, exist_ok=True)
+        os.makedirs(install_dir, exist_ok=True)
     except Exception:
         pass
 
@@ -2035,7 +2216,7 @@ def _refresh_install():
             "$ws = New-Object -ComObject WScript.Shell; "
             f"$s = $ws.CreateShortcut('{_ps_quote(lnk_path)}'); "
             f"$s.TargetPath = '{_ps_quote(inst_exe)}'; "
-            f"$s.WorkingDirectory = '{_ps_quote(INSTALL_DIR)}'; "
+            f"$s.WorkingDirectory = '{_ps_quote(install_dir)}'; "
             f"$s.IconLocation = '{_ps_quote(inst_exe)},0'; "
             "$s.Description = 'LightFrame Video Player'; "
             "$s.Save()"
@@ -2051,8 +2232,9 @@ def _refresh_install():
         except Exception:
             pass
 
-    desktop = os.path.join(os.path.expanduser('~'), 'Desktop')
-    _make_shortcut(os.path.join(desktop, 'LightFrame.lnk'))
+    if _want_desktop_shortcut():
+        desktop = os.path.join(os.path.expanduser('~'), 'Desktop')
+        _make_shortcut(os.path.join(desktop, 'LightFrame.lnk'))
 
     start_menu = os.path.join(
         os.environ.get('APPDATA', ''),
@@ -2068,21 +2250,23 @@ def _refresh_install():
                 winreg.HKEY_CURRENT_USER, app_key,
                 0, winreg.KEY_SET_VALUE) as k:
             winreg.SetValueEx(k, '',     0, winreg.REG_SZ, inst_exe)
-            winreg.SetValueEx(k, 'Path', 0, winreg.REG_SZ, INSTALL_DIR)
+            winreg.SetValueEx(k, 'Path', 0, winreg.REG_SZ, install_dir)
         legacy_app_key = fr'Software\Microsoft\Windows\CurrentVersion\App Paths\{LEGACY_APP_EXE_NAME}'
         with winreg.CreateKeyEx(
             winreg.HKEY_CURRENT_USER, legacy_app_key,
             0, winreg.KEY_SET_VALUE) as k:
             winreg.SetValueEx(k, '',     0, winreg.REG_SZ, inst_exe)
-            winreg.SetValueEx(k, 'Path', 0, winreg.REG_SZ, INSTALL_DIR)
+            winreg.SetValueEx(k, 'Path', 0, winreg.REG_SZ, install_dir)
     except Exception:
         pass
 
 
-def _needs_setup():
+def _needs_setup(install_dir: str = None):
     if not getattr(sys, 'frozen', False):
         return False
-    marker = os.path.join(INSTALL_DIR, '.lightedge_setup_done')
+    if install_dir is None:
+        install_dir = get_install_dir()
+    marker = os.path.join(install_dir, '.lightedge_setup_done')
     return not os.path.isfile(marker)
 
 def main():
@@ -2099,9 +2283,6 @@ def main():
     if os.path.exists(_icon_path):
         from PyQt5.QtGui import QIcon
         app.setWindowIcon(QIcon(_icon_path))
-
-    # Always sync installed exe + re-register right-click menu (fast, every run)
-    _refresh_install()
 
     # File passed via right-click "Open with" or double-click
     open_path = sys.argv[1] if len(sys.argv) > 1 and os.path.isfile(sys.argv[1]) else None
@@ -2120,6 +2301,8 @@ def main():
         setup.finished.connect(_launch)
         sys.exit(app.exec_())
 
+    # Subsequent runs: sync installed exe + re-register right-click menu (fast, uses stored path)
+    _refresh_install()
     win = MainWindow()
     win.show()
     if open_path:
