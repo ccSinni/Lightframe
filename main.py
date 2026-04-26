@@ -966,13 +966,22 @@ def runtime_executable_path():
 
 
 def update_target_executables():
+    """Get list of exe targets to update during installation.
+
+    Note: We do NOT include sys.executable (the currently running exe)
+    because Windows locks it while the process is running. Instead, we
+    copy to lightframe.exe in the install dir, and let that exe handle
+    the migration on next startup via _refresh_install().
+    """
     install_dir = get_install_dir()
     targets = [
         os.path.abspath(os.path.join(install_dir, APP_EXE_NAME)),
         os.path.abspath(os.path.join(install_dir, LEGACY_APP_EXE_NAME)),
     ]
-    if getattr(sys, 'frozen', False):
-        targets.append(runtime_executable_path())
+    # NOTE: Intentionally do NOT add runtime_executable_path() here
+    # because it's currently locked and can't be overwritten.
+    # Instead, we launch the new exe from install_dir, and on next
+    # startup _refresh_install() will sync all copies.
 
     unique_targets = []
     seen = set()
@@ -1374,7 +1383,9 @@ class MainWindow(QMainWindow):
 
         os.makedirs(get_install_dir(), exist_ok=True)
         target_exes = update_target_executables()
-        launch_exe = runtime_executable_path() if getattr(sys, 'frozen', False) else target_exes[0]
+        # Always launch from install_dir/lightframe.exe, not from the currently running exe
+        # (which is locked and can't be replaced)
+        launch_exe = os.path.join(get_install_dir(), APP_EXE_NAME)
 
         fd, tmp_bat = tempfile.mkstemp(prefix='lightframe_update_', suffix='.bat')
         os.close(fd)
