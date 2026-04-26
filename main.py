@@ -1383,62 +1383,18 @@ class MainWindow(QMainWindow):
 
         os.makedirs(get_install_dir(), exist_ok=True)
         install_dir = get_install_dir()
-        launch_exe = os.path.join(install_dir, APP_EXE_NAME)
+        update_staging = os.path.join(install_dir, 'lightframe_update.exe')
 
-        fd, tmp_bat = tempfile.mkstemp(prefix='lightframe_update_', suffix='.bat')
-        os.close(fd)
+        # Copy downloaded exe to staging location in install dir
+        shutil.copy2(downloaded_exe, update_staging)
 
-        # Simple, reliable batch script that waits for old process to close, copies exe, and launches
-        temp_esc = downloaded_exe.replace('"', '')
-        launch_esc = launch_exe.replace('"', '')
-
-        bat_lines = [
-            '@echo off',
-            'setlocal enabledelayedexpansion',
-            'REM Wait for old process to close (up to 30 seconds)',
-            'set /a count=0',
-            ':wait_loop',
-            f'if exist "{launch_esc}" (',
-            '  tasklist /FI "imagename eq lightframe.exe" 2>NUL | find /I /N "lightframe.exe">NUL',
-            '  if errorlevel 1 (',
-            '    REM Process is closed, break out of loop',
-            '    goto do_copy',
-            '  )',
-            '  set /a count=!count!+1',
-            '  if !count! geq 30 (',
-            '    REM Timeout after 30 seconds, try copy anyway',
-            '    goto do_copy',
-            '  )',
-            '  timeout /t 1 /nobreak >nul',
-            '  goto wait_loop',
-            ')',
-            ':do_copy',
-            f'copy /y "{temp_esc}" "{launch_esc}" >nul 2>&1',
-            'if errorlevel 1 (',
-            '  timeout /t 2 /nobreak >nul',
-            f'  copy /y "{temp_esc}" "{launch_esc}" >nul 2>&1',
-            ')',
-            f'del /f /q "{temp_esc}" >nul 2>&1',
-            f'start "" "{launch_esc}"',
-            'timeout /t 1 /nobreak >nul',
-            'del /f /q "%~f0" >nul 2>&1',
-        ]
-
-        with open(tmp_bat, 'w', encoding='utf-8', newline='\r\n') as handle:
-            handle.write('\r\n'.join(bat_lines))
-
-        subprocess.Popen(
-            f'cmd.exe /c "{tmp_bat}"',
-            shell=True,
-        )
-
-        self.sb.showMessage('Installing update and restarting…')
+        self.sb.showMessage('Update ready. Restarting…')
         QMessageBox.information(
             self,
             'Installing Update',
-            'The new version has been downloaded. LightFrame will now close and restart to finish the update.',
+            'The new version has been downloaded. LightFrame will now restart to apply the update.',
         )
-        # Close immediately - batch script waits for process to terminate
+        # Close the app - on next startup, the pending update will be applied
         self.close()
 
     def _uninstall(self):
@@ -2461,7 +2417,42 @@ def _needs_setup(install_dir: str = None):
     marker = os.path.join(install_dir, '.lightedge_setup_done')
     return not os.path.isfile(marker)
 
+
+def _apply_pending_update():
+    """Check for pending update and apply it before app starts.
+
+    If lightframe_update.exe exists in the install dir, move it over
+    the current lightframe.exe. This allows updates to be applied without
+    batch scripts or process detection - the new exe is just launched on
+    the next startup.
+    """
+    if not getattr(sys, 'frozen', False):
+        return  # Only applies to frozen exe
+
+    install_dir = get_install_dir()
+    os.makedirs(install_dir, exist_ok=True)
+
+    update_staging = os.path.join(install_dir, 'lightframe_update.exe')
+    current_exe = os.path.join(install_dir, APP_EXE_NAME)
+
+    if not os.path.isfile(update_staging):
+        return  # No pending update
+
+    try:
+        # Move staging exe over current exe
+        if os.path.exists(current_exe):
+            os.remove(current_exe)
+        os.rename(update_staging, current_exe)
+    except Exception as e:
+        # If we can't apply the update, just continue with the old exe
+        # The update will be retried on next startup
+        pass
+
+
 def main():
+    # Apply any pending update before starting the UI
+    _apply_pending_update()
+
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     app.setApplicationName("LightFrame")
