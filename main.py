@@ -1386,7 +1386,7 @@ class MainWindow(QMainWindow):
         bat_lines = [
             '@echo off',
             f'echo Update started at %date% %time% >> "{log_file}"',
-            'ping 127.0.0.1 -n 2 >nul',
+            'ping 127.0.0.1 -n 5 >nul',
         ]
 
         for index, target_exe in enumerate(target_exes, start=1):
@@ -1394,11 +1394,13 @@ class MainWindow(QMainWindow):
             bat_lines.extend([
                 f':retry_copy_{index}',
                 f'echo Copying to {target_exe} >> "{log_file}"',
-                f'copy /y "{temp_esc}" "{target_esc}" >nul',
+                f'copy /y "{temp_esc}" "{target_esc}" >> "{log_file}" 2>&1',
                 'if errorlevel 1 (',
+                f'  echo ERROR: Copy failed with code %errorlevel% >> "{log_file}"',
                 '  ping 127.0.0.1 -n 2 >nul',
-                '  if errorlevel 1 goto retry_copy_{index}',
+                f'  goto retry_copy_{index}',
                 ')',
+                f'echo Copy successful to {target_exe} >> "{log_file}"',
             ])
 
         launch_esc = launch_exe.replace('"', '')
