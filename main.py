@@ -49,7 +49,7 @@ def _want_desktop_shortcut() -> bool:
 # Backward-compat alias; use get_install_dir() in code
 INSTALL_DIR = _DEFAULT_INSTALL_DIR
 
-APP_VERSION = 'v.1.08'
+APP_VERSION = 'v.1.09'
 GITHUB_REPO = 'ccSinni/Lightframe'
 APP_EXE_NAME = 'lightframe.exe'
 LEGACY_APP_EXE_NAME = 'LightFrame.exe'
@@ -1071,7 +1071,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("LightFrame (Test Update v.1.08)")
+        self.setWindowTitle("LightFrame (Test Update v.1.09)")
         self.resize(980, 660)
         self.setMinimumSize(700, 480)
         self.setAcceptDrops(True)
@@ -1540,7 +1540,8 @@ class MainWindow(QMainWindow):
                     bat_lines.append(f'del /f /q "{file_esc}" >nul 2>&1')
 
                 dir_esc = install_dir.replace('"', '')
-                bat_lines.append(f'rd "{dir_esc}" >nul 2>&1')
+                # Remove the entire LightFrame directory and all its contents
+                bat_lines.append(f'rd /s /q "{dir_esc}" >nul 2>&1')
 
                 if cur_exe.lower() != inst_exe.lower() and os.path.isfile(cur_exe):
                     cur_esc = cur_exe.replace('"', '')
