@@ -1121,7 +1121,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("LightFrame (Test Update v.1.10)")
+        self.setWindowTitle("LightFrame")
         self.resize(980, 660)
         self.setMinimumSize(700, 480)
         self.setAcceptDrops(True)
