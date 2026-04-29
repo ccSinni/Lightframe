@@ -43,37 +43,50 @@ def find_previous_install():
 
 class DownloadWorker(QThread):
     """Download lightframe.exe from GitHub in background."""
-    progress = pyqtSignal(str)
+    progress = pyqtSignal(int, str)  # (percent, message)
     done = pyqtSignal(str)
     error = pyqtSignal(str)
 
     def run(self):
         try:
-            self.progress.emit('Fetching latest release...')
+            self.progress.emit(0, 'Fetching latest release...')
             data = _fetch_json(LATEST_RELEASE_API)
 
             # Find lightframe.exe asset
             asset_url = None
+            asset_size = 0
             for asset in data.get('assets', []):
                 if asset.get('name') == 'lightframe.exe':
                     asset_url = asset.get('browser_download_url')
+                    asset_size = asset.get('size', 0)
                     break
 
             if not asset_url:
                 self.error.emit('lightframe.exe not found in latest release')
                 return
 
-            self.progress.emit('Downloading lightframe.exe...')
             exe_path = os.path.join(os.environ['TEMP'], 'lightframe_download.exe')
 
             request = urllib.request.Request(asset_url, headers=HTTP_HEADERS)
             with urllib.request.urlopen(request, timeout=60) as response:
+                total_size = int(response.headers.get('Content-Length', 0))
+                downloaded = 0
+
                 with open(exe_path, 'wb') as out:
                     while True:
                         chunk = response.read(8192)
                         if not chunk:
                             break
                         out.write(chunk)
+                        downloaded += len(chunk)
+
+                        if total_size > 0:
+                            percent = int((downloaded / total_size) * 100)
+                            size_mb = downloaded / 1024 / 1024
+                            total_mb = total_size / 1024 / 1024
+                            self.progress.emit(percent, f'Downloading... {size_mb:.1f}/{total_mb:.1f} MB')
+                        else:
+                            self.progress.emit(0, f'Downloading lightframe.exe...')
 
             self.done.emit(exe_path)
         except Exception as e:
@@ -175,16 +188,23 @@ class InstallerDialog(QDialog):
 
     def show_progress(self):
         """Show progress dialog and start download."""
-        self.progress_dialog = QProgressDialog('Downloading LightFrame...', None, 0, 0, self)
+        self.progress_dialog = QProgressDialog('Downloading LightFrame...', None, 0, 100, self)
         self.progress_dialog.setWindowModality(Qt.ApplicationModal)
         self.progress_dialog.setCancelButton(None)
+        self.progress_dialog.setWindowTitle('LightFrame Installer')
         self.progress_dialog.show()
 
         self.download_worker = DownloadWorker()
-        self.download_worker.progress.connect(self.progress_dialog.setLabelText)
+        self.download_worker.progress.connect(self.on_download_progress)
         self.download_worker.done.connect(self.on_download_done)
         self.download_worker.error.connect(self.on_download_error)
         self.download_worker.start()
+
+    def on_download_progress(self, percent, message):
+        """Update progress bar during download."""
+        if self.progress_dialog:
+            self.progress_dialog.setLabelText(message)
+            self.progress_dialog.setValue(percent)
 
     def on_download_done(self, exe_path):
         """Download finished, now install."""
@@ -202,11 +222,27 @@ class InstallerDialog(QDialog):
         try:
             os.makedirs(self.install_dir, exist_ok=True)
 
+            # Show installation progress
+            self.progress_dialog = QProgressDialog('Installing LightFrame...', None, 0, 3, self)
+            self.progress_dialog.setWindowModality(Qt.ApplicationModal)
+            self.progress_dialog.setCancelButton(None)
+            self.progress_dialog.setWindowTitle('LightFrame Installer')
+            self.progress_dialog.show()
+
             # Copy exe
+            self.progress_dialog.setLabelText('Copying executable...')
+            self.progress_dialog.setValue(1)
             target_exe = os.path.join(self.install_dir, 'lightframe.exe')
+
+            # Remove old exe if it exists
+            if os.path.exists(target_exe):
+                os.remove(target_exe)
+
             shutil.copy2(self.downloaded_exe, target_exe)
 
             # Create .setup_done marker
+            self.progress_dialog.setLabelText('Finalizing installation...')
+            self.progress_dialog.setValue(2)
             marker = os.path.join(self.install_dir, '.lightedge_setup_done')
             Path(marker).touch()
 
@@ -217,11 +253,16 @@ class InstallerDialog(QDialog):
                 pass
 
             # Launch the installed exe
+            self.progress_dialog.setLabelText('Launching LightFrame...')
+            self.progress_dialog.setValue(3)
             import subprocess
             subprocess.Popen([target_exe])
 
+            self.progress_dialog.close()
             self.accept()
         except Exception as e:
+            if self.progress_dialog:
+                self.progress_dialog.close()
             QMessageBox.critical(self, 'Installation Failed', str(e))
 
 
