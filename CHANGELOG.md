@@ -2,6 +2,12 @@
 
 All notable changes to LightFrame are documented here.
 
+## 1.1 - 2026-04-29
+
+- reset the public release version to `1.1` after the temporary `v.2.x` updater-fix releases
+- kept the self-update fixes that target the exact checked release and reuse the local updater
+- removed the leftover test update text from the main window title
+
 ## v.1.03 - 2026-04-25
 
 - published a fresh release tag so packaged update checks no longer depend on a replaced `v.1.02` asset
