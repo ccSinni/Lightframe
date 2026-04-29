@@ -23,6 +23,7 @@ HTTP_HEADERS = {
     'User-Agent': 'LightFrameUpdater',
 }
 INSTALL_VERSION_FILE = '.lightframe_version'
+UPDATE_EXE_NAME = 'LightframeUpdate.exe'
 
 _DEFAULT_INSTALL_DIR = os.path.join(
     os.environ.get('LOCALAPPDATA', os.path.expanduser('~')), 'LightFrame')
@@ -261,6 +262,15 @@ class InstallerDialog(QDialog):
                 os.remove(target_exe)
 
             shutil.copy2(self.downloaded_exe, target_exe)
+
+            if getattr(sys, 'frozen', False):
+                updater_target = os.path.join(self.install_dir, UPDATE_EXE_NAME)
+                current_updater = os.path.abspath(sys.executable)
+                if os.path.normcase(current_updater) != os.path.normcase(os.path.abspath(updater_target)):
+                    try:
+                        shutil.copy2(current_updater, updater_target)
+                    except Exception:
+                        pass
 
             # Create .setup_done marker
             self.progress_dialog.setLabelText('Finalizing installation...')

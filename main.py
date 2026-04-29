@@ -1009,6 +1009,12 @@ def runtime_executable_path():
     return os.path.abspath(__file__)
 
 
+def local_updater_path(install_dir: str = None) -> str:
+    if install_dir is None:
+        install_dir = get_install_dir()
+    return os.path.abspath(os.path.join(install_dir, UPDATE_ASSET_NAME))
+
+
 def update_target_executables():
     """Get list of exe targets to update during installation.
 
@@ -1311,7 +1317,8 @@ class MainWindow(QMainWindow):
     def _update_check_done(self, release_info):
         self._update_check_worker = None
         latest_tag = release_info.get('tag_name') or ''
-        asset_url = release_info.get('asset_url') or ''
+        updater_asset_url = release_info.get('asset_url') or ''
+        app_asset_url = release_info.get('app_asset_url') or ''
 
         if not latest_tag:
             self.sb.showMessage('Update check failed.')
@@ -1328,12 +1335,12 @@ class MainWindow(QMainWindow):
             )
             return
 
-        if not asset_url:
-            self.sb.showMessage(f'Latest release is missing {UPDATE_ASSET_NAME}.')
+        if not app_asset_url:
+            self.sb.showMessage(f'Latest release is missing {APP_EXE_NAME}.')
             QMessageBox.warning(
                 self,
                 'Check for Updates',
-                f'A newer release exists ({latest_tag}), but it does not include {UPDATE_ASSET_NAME}.',
+                f'A newer release exists ({latest_tag}), but it does not include {APP_EXE_NAME}.',
             )
             return
 
@@ -1360,6 +1367,25 @@ class MainWindow(QMainWindow):
             return
 
         self._pending_update_release = dict(release_info)
+        updater_exe = local_updater_path()
+        if os.path.isfile(updater_exe):
+            try:
+                self._launch_update_installer(updater_exe)
+            except Exception as exc:
+                self.sb.showMessage('Update install failed.')
+                QMessageBox.critical(self, 'Update Failed', f'Could not launch the updater.\n\n{exc}')
+            return
+
+        if not updater_asset_url:
+            self.sb.showMessage(f'Latest release is missing {UPDATE_ASSET_NAME}.')
+            QMessageBox.warning(
+                self,
+                'Check for Updates',
+                f'A newer release exists ({latest_tag}), but the local updater is missing and the release '
+                f'does not include {UPDATE_ASSET_NAME}.',
+            )
+            return
+
         self._start_update_download()
 
     def _update_check_failed(self, message):
@@ -1421,15 +1447,15 @@ class MainWindow(QMainWindow):
         self.sb.showMessage('Update download failed.')
         QMessageBox.warning(self, 'Update Failed', message)
 
-    def _apply_downloaded_update(self, downloaded_exe):
-        if not os.path.isfile(downloaded_exe):
-            raise RuntimeError('Downloaded update file was not found.')
+    def _launch_update_installer(self, updater_exe):
+        if not os.path.isfile(updater_exe):
+            raise RuntimeError('Updater file was not found.')
 
         # Launch the updater exe (LightframeUpdate.exe)
         # It will handle the installation/update process for the exact release
         # the app already checked, avoiding a second "latest" lookup.
         args = [
-            downloaded_exe,
+            updater_exe,
             '--install-dir', get_install_dir(),
         ]
         if self._pending_update_release:
@@ -1443,6 +1469,9 @@ class MainWindow(QMainWindow):
 
         self.sb.showMessage('Update installer launched.')
         self.close()  # Close the app so updater can replace it
+
+    def _apply_downloaded_update(self, downloaded_exe):
+        self._launch_update_installer(downloaded_exe)
 
     def _uninstall(self):
         reply = QMessageBox.question(
