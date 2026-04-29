@@ -2,6 +2,11 @@
 
 All notable changes to LightFrame are documented here.
 
+## 1.1.1 - 2026-04-29
+
+- published a patch release so existing `1.1` installs can detect the shortcut installer fix
+- creates Desktop and Start Menu shortcuts directly during the installer flow
+
 ## 1.1 - 2026-04-29
 
 - reset the public release version to `1.1` after the temporary `v.2.x` updater-fix releases

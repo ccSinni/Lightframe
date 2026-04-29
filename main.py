@@ -50,7 +50,7 @@ def _want_desktop_shortcut() -> bool:
 # Backward-compat alias; use get_install_dir() in code
 INSTALL_DIR = _DEFAULT_INSTALL_DIR
 
-APP_VERSION = '1.1'
+APP_VERSION = '1.1.1'
 GITHUB_REPO = 'ccSinni/Lightframe'
 APP_EXE_NAME = 'lightframe.exe'
 LEGACY_APP_EXE_NAME = 'LightFrame.exe'
