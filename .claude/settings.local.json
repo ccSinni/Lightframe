@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gh release *)",
+      "Bash(git add *)",
+      "Bash(git commit -m 'Switch to reliable on-next-startup update mechanism *)"
+    ]
+  }
+}

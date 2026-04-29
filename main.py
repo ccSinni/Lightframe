@@ -53,7 +53,7 @@ APP_VERSION = 'v.1.15'
 GITHUB_REPO = 'ccSinni/Lightframe'
 APP_EXE_NAME = 'lightframe.exe'
 LEGACY_APP_EXE_NAME = 'LightFrame.exe'
-UPDATE_ASSET_NAME = APP_EXE_NAME
+UPDATE_ASSET_NAME = 'LightframeUpdate.exe'
 LATEST_RELEASE_API = f'https://api.github.com/repos/{GITHUB_REPO}/releases/latest'
 HTTP_HEADERS = {
     'Accept': 'application/vnd.github+json',
@@ -1381,21 +1381,12 @@ class MainWindow(QMainWindow):
         if not os.path.isfile(downloaded_exe):
             raise RuntimeError('Downloaded update file was not found.')
 
-        os.makedirs(get_install_dir(), exist_ok=True)
-        install_dir = get_install_dir()
-        update_staging = os.path.join(install_dir, 'lightframe_update.exe')
+        # Launch the updater exe (LightframeUpdate.exe)
+        # It will handle the installation/update process
+        subprocess.Popen([downloaded_exe])
 
-        # Copy downloaded exe to staging location in install dir
-        shutil.copy2(downloaded_exe, update_staging)
-
-        self.sb.showMessage('Update ready. Restarting…')
-        QMessageBox.information(
-            self,
-            'Installing Update',
-            'The new version has been downloaded. LightFrame will now restart to apply the update.',
-        )
-        # Close the app - on next startup, the pending update will be applied
-        self.close()
+        self.sb.showMessage('Update installer launched.')
+        self.close()  # Close the app so updater can replace it
 
     def _uninstall(self):
         reply = QMessageBox.question(
@@ -2418,44 +2409,7 @@ def _needs_setup(install_dir: str = None):
     return not os.path.isfile(marker)
 
 
-def _apply_pending_update():
-    """Check for pending update and apply it before app starts.
-
-    If lightframe_update.exe exists in the install dir, move it over
-    the current lightframe.exe. This allows updates to be applied without
-    batch scripts or process detection - the new exe is just launched on
-    the next startup.
-
-    Note: Called before QApplication is created, so we can't use QSettings.
-    """
-    if not getattr(sys, 'frozen', False):
-        return  # Only applies to frozen exe
-
-    # Use default install dir directly (QApplication not yet created)
-    install_dir = _DEFAULT_INSTALL_DIR
-    os.makedirs(install_dir, exist_ok=True)
-
-    update_staging = os.path.join(install_dir, 'lightframe_update.exe')
-    current_exe = os.path.join(install_dir, APP_EXE_NAME)
-
-    if not os.path.isfile(update_staging):
-        return  # No pending update
-
-    try:
-        # Move staging exe over current exe
-        if os.path.exists(current_exe):
-            os.remove(current_exe)
-        os.rename(update_staging, current_exe)
-    except Exception as e:
-        # If we can't apply the update, just continue with the old exe
-        # The update will be retried on next startup
-        pass
-
-
 def main():
-    # Apply any pending update before starting the UI
-    _apply_pending_update()
-
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     app.setApplicationName("LightFrame")
