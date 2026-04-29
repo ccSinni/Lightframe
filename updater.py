@@ -122,6 +122,7 @@ class InstallerDialog(QDialog):
         layout.addLayout(loc_layout)
 
         # Custom path input (hidden initially)
+        self.custom_widget = QWidget()
         self.custom_layout = QHBoxLayout()
         self.custom_layout.addWidget(QLabel('Custom path:'))
         self.custom_input = QLineEdit()
@@ -130,8 +131,9 @@ class InstallerDialog(QDialog):
         browse_btn = QPushButton('Browse...')
         browse_btn.clicked.connect(self.browse_folder)
         self.custom_layout.addWidget(browse_btn)
-        layout.addLayout(self.custom_layout)
-        self.custom_layout.setVisible(False)
+        self.custom_widget.setLayout(self.custom_layout)
+        layout.addWidget(self.custom_widget)
+        self.custom_widget.setVisible(False)
 
         # Buttons
         btn_layout = QHBoxLayout()
@@ -146,9 +148,9 @@ class InstallerDialog(QDialog):
     def on_location_changed(self):
         """Show/hide custom path input."""
         if self.location_combo.currentData() == 'custom':
-            self.custom_layout.setVisible(True)
+            self.custom_widget.setVisible(True)
         else:
-            self.custom_layout.setVisible(False)
+            self.custom_widget.setVisible(False)
 
     def browse_folder(self):
         """Browse for custom install folder."""
