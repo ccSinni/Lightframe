@@ -3,6 +3,7 @@
 
 import sys
 import os
+import argparse
 import shutil
 import json
 import urllib.error
@@ -21,6 +22,7 @@ HTTP_HEADERS = {
     'Accept': 'application/vnd.github+json',
     'User-Agent': 'LightFrameUpdater',
 }
+INSTALL_VERSION_FILE = '.lightframe_version'
 
 _DEFAULT_INSTALL_DIR = os.path.join(
     os.environ.get('LOCALAPPDATA', os.path.expanduser('~')), 'LightFrame')
@@ -47,19 +49,25 @@ class DownloadWorker(QThread):
     done = pyqtSignal(str)
     error = pyqtSignal(str)
 
+    def __init__(self, asset_url=None, version=''):
+        super().__init__()
+        self.asset_url = asset_url
+        self.version = version
+
     def run(self):
         try:
-            self.progress.emit(0, 'Fetching latest release...')
-            data = _fetch_json(LATEST_RELEASE_API)
+            asset_url = self.asset_url
+            if not asset_url:
+                self.progress.emit(0, 'Fetching latest release...')
+                data = _fetch_json(LATEST_RELEASE_API)
 
-            # Find lightframe.exe asset
-            asset_url = None
-            asset_size = 0
-            for asset in data.get('assets', []):
-                if asset.get('name') == 'lightframe.exe':
-                    asset_url = asset.get('browser_download_url')
-                    asset_size = asset.get('size', 0)
-                    break
+                # Find lightframe.exe asset
+                for asset in data.get('assets', []):
+                    if asset.get('name') == 'lightframe.exe':
+                        asset_url = asset.get('browser_download_url')
+                        if not self.version:
+                            self.version = data.get('tag_name') or ''
+                        break
 
             if not asset_url:
                 self.error.emit('lightframe.exe not found in latest release')
@@ -96,15 +104,19 @@ class DownloadWorker(QThread):
 class InstallerDialog(QDialog):
     """Main installer/updater dialog."""
 
-    def __init__(self, parent=None):
+    def __init__(self, install_dir=None, asset_url=None, version='', parent=None):
         super().__init__(parent)
         self.setWindowTitle('LightFrame Installer')
         self.setMinimumWidth(500)
-        self.install_dir = None
+        self.install_dir = install_dir
+        self.asset_url = asset_url
+        self.version = version
         self.downloaded_exe = None
         self.download_worker = None
 
         self.init_ui()
+        if install_dir:
+            self._apply_initial_install_dir(install_dir)
 
     def init_ui(self):
         """Build the installer UI."""
@@ -158,6 +170,16 @@ class InstallerDialog(QDialog):
 
         self.setLayout(layout)
 
+    def _apply_initial_install_dir(self, install_dir):
+        """Select or display the install folder passed by the app."""
+        for i in range(self.location_combo.count()):
+            if os.path.normcase(os.path.abspath(self.location_combo.itemData(i))) == os.path.normcase(os.path.abspath(install_dir)):
+                self.location_combo.setCurrentIndex(i)
+                return
+        self.location_combo.setCurrentIndex(self.location_combo.findData('custom'))
+        self.custom_input.setText(install_dir)
+        self.custom_widget.setVisible(True)
+
     def on_location_changed(self):
         """Show/hide custom path input."""
         if self.location_combo.currentData() == 'custom':
@@ -194,7 +216,7 @@ class InstallerDialog(QDialog):
         self.progress_dialog.setWindowTitle('LightFrame Installer')
         self.progress_dialog.show()
 
-        self.download_worker = DownloadWorker()
+        self.download_worker = DownloadWorker(self.asset_url, self.version)
         self.download_worker.progress.connect(self.on_download_progress)
         self.download_worker.done.connect(self.on_download_done)
         self.download_worker.error.connect(self.on_download_error)
@@ -245,6 +267,9 @@ class InstallerDialog(QDialog):
             self.progress_dialog.setValue(2)
             marker = os.path.join(self.install_dir, '.lightedge_setup_done')
             Path(marker).touch()
+            if self.version:
+                version_marker = os.path.join(self.install_dir, INSTALL_VERSION_FILE)
+                Path(version_marker).write_text(self.version.strip() + '\n', encoding='utf-8')
 
             # Clean up downloaded file
             try:
@@ -266,7 +291,17 @@ class InstallerDialog(QDialog):
             QMessageBox.critical(self, 'Installation Failed', str(e))
 
 
+def parse_args(argv):
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument('--install-dir')
+    parser.add_argument('--asset-url')
+    parser.add_argument('--version', default='')
+    args, _ = parser.parse_known_args(argv)
+    return args
+
+
 def main():
+    args = parse_args(sys.argv[1:])
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
     app.setApplicationName('LightFrame Installer')
@@ -274,11 +309,16 @@ def main():
     # Check for previous install
     prev_install = find_previous_install()
 
-    dialog = InstallerDialog()
+    dialog = InstallerDialog(
+        install_dir=args.install_dir,
+        asset_url=args.asset_url,
+        version=args.version,
+    )
     if prev_install:
         # Pre-select previous install location
-        dialog.location_combo.setCurrentIndex(0)  # AppData is default
-        dialog.install_dir = prev_install
+        if not args.install_dir:
+            dialog.location_combo.setCurrentIndex(0)  # AppData is default
+            dialog.install_dir = prev_install
 
     dialog.show()
     sys.exit(app.exec_())

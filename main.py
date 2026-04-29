@@ -11,6 +11,7 @@ import sys
 import os
 import base64
 import json
+import re
 import shutil
 import subprocess
 import tempfile
@@ -54,6 +55,7 @@ GITHUB_REPO = 'ccSinni/Lightframe'
 APP_EXE_NAME = 'lightframe.exe'
 LEGACY_APP_EXE_NAME = 'LightFrame.exe'
 UPDATE_ASSET_NAME = 'LightframeUpdate.exe'
+INSTALL_VERSION_FILE = '.lightframe_version'
 LATEST_RELEASE_API = f'https://api.github.com/repos/{GITHUB_REPO}/releases/latest'
 HTTP_HEADERS = {
     'Accept': 'application/vnd.github+json',
@@ -930,10 +932,49 @@ def _normalize_release_tag(tag):
     return cleaned.lower()
 
 
+def _release_version_parts(tag):
+    normalized = _normalize_release_tag(tag)
+    if not normalized:
+        return ()
+    return tuple(int(part) for part in re.findall(r'\d+', normalized))
+
+
+def _compare_release_tags(left_tag, right_tag):
+    left_parts = _release_version_parts(left_tag)
+    right_parts = _release_version_parts(right_tag)
+    if left_parts and right_parts:
+        width = max(len(left_parts), len(right_parts))
+        left_parts = left_parts + (0,) * (width - len(left_parts))
+        right_parts = right_parts + (0,) * (width - len(right_parts))
+        return (left_parts > right_parts) - (left_parts < right_parts)
+
+    left_normalized = _normalize_release_tag(left_tag)
+    right_normalized = _normalize_release_tag(right_tag)
+    return (left_normalized > right_normalized) - (left_normalized < right_normalized)
+
+
 def _is_newer_release(latest_tag, current_tag):
-    latest_normalized = _normalize_release_tag(latest_tag)
-    current_normalized = _normalize_release_tag(current_tag)
-    return bool(latest_normalized) and latest_normalized != current_normalized
+    return bool(_normalize_release_tag(latest_tag)) and _compare_release_tags(latest_tag, current_tag) > 0
+
+
+def _version_marker_path(install_dir: str) -> str:
+    return os.path.join(install_dir, INSTALL_VERSION_FILE)
+
+
+def _read_installed_version(install_dir: str) -> str:
+    try:
+        with open(_version_marker_path(install_dir), 'r', encoding='utf-8') as marker:
+            return marker.read().strip()
+    except Exception:
+        return ''
+
+
+def _write_installed_version(install_dir: str, version: str = APP_VERSION):
+    try:
+        with open(_version_marker_path(install_dir), 'w', encoding='utf-8') as marker:
+            marker.write(version.strip() + '\n')
+    except Exception:
+        pass
 
 
 def _fetch_json(url):
@@ -944,18 +985,21 @@ def _fetch_json(url):
 
 def latest_release_info():
     data = _fetch_json(LATEST_RELEASE_API)
-    asset = None
+    updater_asset = None
+    app_asset = None
     for item in data.get('assets', []):
         if item.get('name') == UPDATE_ASSET_NAME:
-            asset = item
-            break
+            updater_asset = item
+        elif item.get('name') == APP_EXE_NAME:
+            app_asset = item
     return {
         'tag_name': data.get('tag_name') or '',
         'name': data.get('name') or data.get('tag_name') or 'Latest Release',
         'body': data.get('body') or '',
         'html_url': data.get('html_url') or '',
         'published_at': data.get('published_at') or '',
-        'asset_url': asset.get('browser_download_url') if asset else '',
+        'asset_url': updater_asset.get('browser_download_url') if updater_asset else '',
+        'app_asset_url': app_asset.get('browser_download_url') if app_asset else '',
     }
 
 
@@ -1382,8 +1426,20 @@ class MainWindow(QMainWindow):
             raise RuntimeError('Downloaded update file was not found.')
 
         # Launch the updater exe (LightframeUpdate.exe)
-        # It will handle the installation/update process
-        subprocess.Popen([downloaded_exe])
+        # It will handle the installation/update process for the exact release
+        # the app already checked, avoiding a second "latest" lookup.
+        args = [
+            downloaded_exe,
+            '--install-dir', get_install_dir(),
+        ]
+        if self._pending_update_release:
+            latest_tag = self._pending_update_release.get('tag_name') or ''
+            app_asset_url = self._pending_update_release.get('app_asset_url') or ''
+            if latest_tag:
+                args.extend(['--version', latest_tag])
+            if app_asset_url:
+                args.extend(['--asset-url', app_asset_url])
+        subprocess.Popen(args)
 
         self.sb.showMessage('Update installer launched.')
         self.close()  # Close the app so updater can replace it
@@ -2269,6 +2325,12 @@ def _refresh_install(install_dir: str = None):
     cur_exe = os.path.abspath(sys.executable)
     inst_exe = os.path.join(install_dir, APP_EXE_NAME)
     legacy_inst_exe = os.path.join(install_dir, LEGACY_APP_EXE_NAME)
+    installed_version = _read_installed_version(install_dir)
+    installed_is_newer = (
+        os.path.isfile(inst_exe)
+        and installed_version
+        and _compare_release_tags(installed_version, APP_VERSION) > 0
+    )
 
     try:
         os.makedirs(install_dir, exist_ok=True)
@@ -2276,7 +2338,9 @@ def _refresh_install(install_dir: str = None):
         pass
 
     # Sync exe to install dir (skip if already running from there)
-    if cur_exe.lower() != os.path.abspath(inst_exe).lower():
+    if cur_exe.lower() == os.path.abspath(inst_exe).lower():
+        _write_installed_version(install_dir)
+    elif not installed_is_newer:
         try:
             # Only overwrite if different size or newer timestamp
             do_copy = True
@@ -2288,10 +2352,11 @@ def _refresh_install(install_dir: str = None):
                     do_copy = False
             if do_copy:
                 shutil.copy2(cur_exe, inst_exe)
+                _write_installed_version(install_dir)
         except Exception:
             inst_exe = cur_exe   # fall back: register current location
 
-    if cur_exe.lower() != os.path.abspath(legacy_inst_exe).lower():
+    if cur_exe.lower() != os.path.abspath(legacy_inst_exe).lower() and not installed_is_newer:
         try:
             do_copy = True
             if os.path.isfile(legacy_inst_exe):
