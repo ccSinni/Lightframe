@@ -11,7 +11,7 @@ from pathlib import Path
 
 from PyQt5.QtWidgets import (
     QApplication, QDialog, QVBoxLayout, QHBoxLayout, QPushButton,
-    QLabel, QComboBox, QLineEdit, QMessageBox, QProgressDialog,
+    QLabel, QComboBox, QLineEdit, QMessageBox, QProgressDialog, QWidget,
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 
