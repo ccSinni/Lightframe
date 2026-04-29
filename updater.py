@@ -4,7 +4,9 @@
 import sys
 import os
 import argparse
+import base64
 import shutil
+import subprocess
 import json
 import urllib.error
 import urllib.request
@@ -42,6 +44,55 @@ def find_previous_install():
     if os.path.isfile(lightframe_exe):
         return _DEFAULT_INSTALL_DIR
     return None
+
+
+def _make_shortcut(lnk_path, target_exe, working_dir):
+    """Create or update a Windows shortcut."""
+    def _ps_quote(value):
+        return value.replace("'", "''")
+
+    try:
+        os.makedirs(os.path.dirname(lnk_path), exist_ok=True)
+    except Exception:
+        return False
+
+    ps = (
+        "$ErrorActionPreference = 'Stop'; "
+        "$ws = New-Object -ComObject WScript.Shell; "
+        f"$s = $ws.CreateShortcut('{_ps_quote(lnk_path)}'); "
+        f"$s.TargetPath = '{_ps_quote(target_exe)}'; "
+        f"$s.WorkingDirectory = '{_ps_quote(working_dir)}'; "
+        f"$s.IconLocation = '{_ps_quote(target_exe)},0'; "
+        "$s.Description = 'LightFrame Video Player'; "
+        "$s.Save(); "
+        "exit 0"
+    )
+    encoded = base64.b64encode(ps.encode('utf-16le')).decode('ascii')
+    flags = subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
+    try:
+        result = subprocess.run(
+            ['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass',
+             '-EncodedCommand', encoded],
+            creationflags=flags,
+            timeout=10,
+            capture_output=True,
+            text=True,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def create_shortcuts(install_dir, target_exe):
+    """Create Desktop and Start Menu shortcuts for LightFrame."""
+    desktop = os.path.join(os.path.expanduser('~'), 'Desktop')
+    _make_shortcut(os.path.join(desktop, 'LightFrame.lnk'), target_exe, install_dir)
+
+    start_menu = os.path.join(
+        os.environ.get('APPDATA', ''),
+        r'Microsoft\Windows\Start Menu\Programs')
+    if start_menu:
+        _make_shortcut(os.path.join(start_menu, 'LightFrame.lnk'), target_exe, install_dir)
 
 
 class DownloadWorker(QThread):
@@ -272,9 +323,12 @@ class InstallerDialog(QDialog):
                     except Exception:
                         pass
 
-            # Create .setup_done marker
+            # Create shortcuts immediately; the app will refresh them again on launch.
             self.progress_dialog.setLabelText('Finalizing installation...')
             self.progress_dialog.setValue(2)
+            create_shortcuts(self.install_dir, target_exe)
+
+            # Create .setup_done marker
             marker = os.path.join(self.install_dir, '.lightedge_setup_done')
             Path(marker).touch()
             if self.version:
