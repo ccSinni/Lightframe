@@ -2,6 +2,12 @@
 
 All notable changes to LightFrame are documented here.
 
+## 1.1.2 - 2026-04-29
+
+- polished timeline zoom interaction with smoother zoom steps and reset animation
+- added draggable panning on the zoom overview bar
+- improved zoom readout and timeline drawing details
+
 ## 1.1.1 - 2026-04-29
 
 - published a patch release so existing `1.1` installs can detect the shortcut installer fix
