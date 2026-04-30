@@ -68,7 +68,10 @@ from PyQt5.QtWidgets import (
     QMessageBox, QSizePolicy, QStatusBar, QAction, QShortcut, QProgressDialog,
     QComboBox, QLineEdit,
 )
-from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal, QSettings, QPoint
+from PyQt5.QtCore import (
+    Qt, QTimer, QThread, pyqtSignal, QSettings, QPoint,
+    QVariantAnimation, QEasingCurve,
+)
 from PyQt5.QtGui import QFont, QKeySequence, QColor, QPainter, QPen, QPixmap
 
 try:
@@ -484,13 +487,17 @@ class SeekSlider(QWidget):
         super().__init__()
         self.setMinimumHeight(self._GH + self._RH + self._BH + 8)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.setMouseTracking(True)
         self._pos_frac   = 0.0
         self._duration   = 0.0
         self._in         = None
         self._out        = None
         self._dragging   = False
+        self._panning    = False
+        self._pan_offset = 0.0
         self._zoom       = 1.0
         self._view_start = 0.0
+        self._zoom_anim  = None
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -523,10 +530,7 @@ class SeekSlider(QWidget):
         self.update()
 
     def reset_zoom(self):
-        self._zoom       = 1.0
-        self._view_start = 0.0
-        self.update()
-        self.zoom_changed.emit(1.0)
+        self._animate_zoom(1.0, 0.0)
 
     def zoom_step(self, factor):
         center   = self._view_start + self._window / 2
@@ -534,10 +538,43 @@ class SeekSlider(QWidget):
         if abs(new_zoom - self._zoom) < 0.001:
             return
         nw = 1.0 / new_zoom
-        self._view_start = max(0.0, min(1.0 - nw, center - nw / 2))
-        self._zoom       = new_zoom
+        self._animate_zoom(new_zoom, max(0.0, min(1.0 - nw, center - nw / 2)))
+
+    def _set_zoom_state(self, zoom, view_start, notify=True):
+        self._zoom = max(1.0, min(200.0, zoom))
+        self._view_start = max(0.0, min(1.0 - self._window, view_start))
         self.update()
-        self.zoom_changed.emit(new_zoom)
+        if notify:
+            self.zoom_changed.emit(self._zoom)
+
+    def _animate_zoom(self, target_zoom, target_start):
+        if self._zoom_anim and self._zoom_anim.state() == QVariantAnimation.Running:
+            self._zoom_anim.stop()
+
+        start_zoom = self._zoom
+        start_view = self._view_start
+        target_zoom = max(1.0, min(200.0, target_zoom))
+        target_win = 1.0 / target_zoom
+        target_start = max(0.0, min(1.0 - target_win, target_start))
+
+        if abs(target_zoom - start_zoom) < 0.001 and abs(target_start - start_view) < 0.0001:
+            return
+
+        anim = QVariantAnimation(self)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.setDuration(140)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+
+        def apply(t):
+            zoom = start_zoom + (target_zoom - start_zoom) * t
+            view = start_view + (target_start - start_view) * t
+            self._set_zoom_state(zoom, view)
+
+        anim.valueChanged.connect(apply)
+        anim.finished.connect(lambda: self._set_zoom_state(target_zoom, target_start))
+        self._zoom_anim = anim
+        anim.start()
 
     # ── Coordinate helpers ────────────────────────────────────────────────────
 
@@ -567,9 +604,17 @@ class SeekSlider(QWidget):
         if event.button() != Qt.LeftButton:
             return
         if self._in_overview(event.y()) and self._zoom > 1.001:
-            # Click on overview bar: pan the view to that position
             frac = max(0.0, min(1.0, (event.x() - self._PAD) / max(1, self._uw())))
-            self.set_view(frac - self._window / 2)
+            vx = self._view_start
+            if vx <= frac <= vx + self._window:
+                self._panning = True
+                self._pan_offset = frac - self._view_start
+                self.setCursor(Qt.SizeHorCursor)
+            else:
+                self._panning = True
+                self._pan_offset = self._window / 2
+                self._animate_zoom(self._zoom, frac - self._pan_offset)
+                self.setCursor(Qt.SizeHorCursor)
         else:
             self._dragging = True
             self.drag_start.emit()
@@ -585,7 +630,11 @@ class SeekSlider(QWidget):
         event.accept()
 
     def mouseMoveEvent(self, event):
-        if self._dragging and event.buttons() & Qt.LeftButton:
+        if self._panning and event.buttons() & Qt.LeftButton:
+            frac = max(0.0, min(1.0, (event.x() - self._PAD) / max(1, self._uw())))
+            self.set_view(frac - self._pan_offset)
+            event.accept()
+        elif self._dragging and event.buttons() & Qt.LeftButton:
             val = self._val_from_x(event.x())
             self._pos_frac = val / 10000
             self.update()
@@ -596,13 +645,23 @@ class SeekSlider(QWidget):
                     self.mapToGlobal(QPoint(event.x(), 0)),
                 )
             event.accept()
+        elif self._in_overview(event.y()) and self._zoom > 1.001:
+            self.setCursor(Qt.SizeHorCursor)
+        else:
+            self.unsetCursor()
 
     def leaveEvent(self, event):
         self.preview_hidden.emit()
+        if not self._dragging and not self._panning:
+            self.unsetCursor()
         super().leaveEvent(event)
 
     def mouseReleaseEvent(self, event):
-        if event.button() == Qt.LeftButton and self._dragging:
+        if event.button() == Qt.LeftButton and self._panning:
+            self._panning = False
+            self.unsetCursor()
+            event.accept()
+        elif event.button() == Qt.LeftButton and self._dragging:
             self._dragging = False
             val = self._val_from_x(event.x())
             self._pos_frac = val / 10000
@@ -612,20 +671,18 @@ class SeekSlider(QWidget):
             event.accept()
 
     def wheelEvent(self, event):
-        delta    = event.angleDelta().y()
-        factor   = 1.35 if delta > 0 else (1 / 1.35)
+        delta = event.pixelDelta().y() or event.angleDelta().y()
+        if delta == 0:
+            return
+        factor = pow(1.0018, delta)
         new_zoom = max(1.0, min(200.0, self._zoom * factor))
         if abs(new_zoom - self._zoom) < 0.001:
             return
-        # Keep the time fraction under the mouse cursor fixed
         pivot     = self._frac_from_x(event.x())
         new_win   = 1.0 / new_zoom
         local_f   = (pivot - self._view_start) / self._window
         new_start = pivot - local_f * new_win
-        self._view_start = max(0.0, min(1.0 - new_win, new_start))
-        self._zoom       = new_zoom
-        self.update()
-        self.zoom_changed.emit(new_zoom)
+        self._set_zoom_state(new_zoom, max(0.0, min(1.0 - new_win, new_start)))
         event.accept()
 
     # ── Paint ─────────────────────────────────────────────────────────────────
@@ -633,6 +690,7 @@ class SeekSlider(QWidget):
     def paintEvent(self, event):
         from PyQt5.QtGui import QPainter, QColor, QPen, QFont
         p  = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
         uw = self._uw()
         pl = self._PAD
 
@@ -641,7 +699,9 @@ class SeekSlider(QWidget):
         bar_y    = self.height() - self._BH - 2
 
         # ── Groove ────────────────────────────────────────────────────────
-        p.fillRect(pl, groove_y, uw, self._GH, QColor('#25303c'))
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor('#25303c'))
+        p.drawRoundedRect(pl, groove_y, uw, self._GH, 4, 4)
 
         # Trim region highlight
         if self._in is not None and self._out is not None:
@@ -649,12 +709,15 @@ class SeekSlider(QWidget):
             xo = max(pl, min(pl + uw, self._x_from_frac(self._out)))
             if xo > xi:
                 p.setOpacity(0.35)
-                p.fillRect(int(xi), groove_y, int(xo - xi), self._GH, QColor('#4aa3ff'))
+                p.setBrush(QColor('#4aa3ff'))
+                p.drawRoundedRect(int(xi), groove_y, int(xo - xi), self._GH, 4, 4)
                 p.setOpacity(1.0)
 
         # Played region (left of playhead), clipped to groove
         px = max(float(pl), min(float(pl + uw), self._x_from_frac(self._pos_frac)))
-        p.fillRect(pl, groove_y, int(px - pl), self._GH, QColor('#2c86e8'))
+        if px > pl:
+            p.setBrush(QColor('#2c86e8'))
+            p.drawRoundedRect(pl, groove_y, int(px - pl), self._GH, 4, 4)
 
         # Trim markers
         for frac, col in ((self._in, '#38d27d'), (self._out, '#ff9f43')):
@@ -700,8 +763,10 @@ class SeekSlider(QWidget):
                 t += interval
 
         # ── Mini overview bar ─────────────────────────────────────────────
-        p.setOpacity(0.4)
-        p.fillRect(pl, bar_y, uw, self._BH, QColor('#25303c'))
+        p.setOpacity(0.45)
+        p.setBrush(QColor('#25303c'))
+        p.setPen(Qt.NoPen)
+        p.drawRoundedRect(pl, bar_y, uw, self._BH, 3, 3)
         p.setOpacity(1.0)
 
         # Trim region on overview
@@ -716,11 +781,13 @@ class SeekSlider(QWidget):
         if self._zoom > 1.001:
             vx = int(pl + self._view_start * uw)
             vw = max(3, int(self._window * uw))
-            p.setOpacity(0.5)
-            p.fillRect(vx, bar_y, vw, self._BH, QColor('#4aa3ff'))
+            p.setOpacity(0.65)
+            p.setBrush(QColor('#4aa3ff'))
+            p.setPen(Qt.NoPen)
+            p.drawRoundedRect(vx, bar_y - 1, vw, self._BH + 2, 3, 3)
             p.setOpacity(1.0)
             p.setPen(QPen(QColor('#68b6ff'), 1))
-            p.drawRect(vx, bar_y, vw, self._BH - 1)
+            p.drawRoundedRect(vx, bar_y - 1, vw, self._BH + 2, 3, 3)
 
         # Playhead on overview
         ox = int(pl + self._pos_frac * uw)
@@ -1214,7 +1281,7 @@ class MainWindow(QMainWindow):
         self.seek.zoom_changed.connect(self._on_zoom_changed)
         self.seek.drag_preview.connect(self._queue_seek_thumbnail)
         self.seek.preview_hidden.connect(self._hide_seek_thumbnail)
-        self.lbl_zoom = QLabel("1×")
+        self.lbl_zoom = QLabel("1x")
         self.lbl_zoom.setFont(mono9)
         self.lbl_zoom.setMinimumWidth(38)
         self.lbl_zoom.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
@@ -1222,6 +1289,7 @@ class MainWindow(QMainWindow):
         self.btn_zoom_reset = QPushButton("⊙")
         self.btn_zoom_reset.setMaximumWidth(28)
         self.btn_zoom_reset.setToolTip("Reset zoom  (scroll wheel on the seek bar to zoom)")
+        self.btn_zoom_reset.setEnabled(False)
         self.btn_zoom_reset.clicked.connect(lambda: self.seek.reset_zoom())
         row_seek.addWidget(self.lbl_pos)
         row_seek.addWidget(self.seek)
@@ -1807,7 +1875,13 @@ class MainWindow(QMainWindow):
         self.sld_vol.setValue(max(0, min(150, self.sld_vol.value() + dv)))
 
     def _on_zoom_changed(self, zoom):
-        self.lbl_zoom.setText("1×" if zoom <= 1.001 else f"{zoom:.1f}×")
+        if zoom <= 1.001:
+            self.lbl_zoom.setText("1x")
+        elif zoom < 10:
+            self.lbl_zoom.setText(f"{zoom:.1f}x")
+        else:
+            self.lbl_zoom.setText(f"{zoom:.0f}x")
+        self.btn_zoom_reset.setEnabled(zoom > 1.001)
 
     def _queue_seek_thumbnail(self, seconds, global_pos):
         if not self._thumbs_available or not self.src_file or not self.duration:
